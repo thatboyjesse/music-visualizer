@@ -39,6 +39,7 @@ Everything runs in one process. The UI thread owns rendering, now-playing pollin
 | `Core/StartWithWindows.cs` | The per-user `Run` registry entry. |
 | `Core/Uninstaller.cs` | `--uninstall`: removes the app, shortcuts, registry entries and settings. |
 | `Core/DarkTitleBar.cs` | Dark title bars through `DwmSetWindowAttribute`. |
+| `Core/Memory.cs` | `Trim()`: compacts the .NET heap and hands unused pages back to Windows while nothing is drawn. |
 | `SettingsWindow.xaml(.cs)` | Settings and first-run welcome: live preview, *Run as wallpaper*, screen, and Appearance / Audio / General tabs. |
 | `MainWindow.xaml(.cs)` | The optional visualizer window: control bar, intro, now-playing card, file playback, shortcuts, fullscreen. |
 | `Audio/AudioEngine.cs` | File playback, all-audio capture, per-app capture, the sample ring buffers. |
@@ -52,6 +53,7 @@ Everything runs in one process. The UI thread owns rendering, now-playing pollin
 | `NowPlaying/ImageUtil.cs` | Image loading and dominant-hue extraction. |
 | `Controls/NowPlayingCard.xaml(.cs)` | Album art, title, progress and transport buttons, reused by the windows and the preview. `Place()` puts it in a corner or edge, or hides it. |
 | `Wallpaper/DesktopWallpaper.cs` | Win32 code that places a window behind the desktop icons. |
+| `Wallpaper/Occlusion.cs` | Detects a maximized or full-screen window covering the wallpaper's screen. |
 | `Wallpaper/Screens.cs` | Lists monitors (`EnumDisplayMonitors`/`GetMonitorInfo`) and picks the saved one. |
 | `Wallpaper/WallpaperWindow.xaml(.cs)` | The borderless window used as the wallpaper; also fades to the normal wallpaper while nothing plays. |
 | `Settings/AppSettings.cs` | JSON settings in `%AppData%\MusicVisualizer`. |
@@ -61,6 +63,7 @@ Everything runs in one process. The UI thread owns rendering, now-playing pollin
 | `app.manifest` | Declares Windows 8/10 support, which layered child windows (the wallpaper) need. |
 | `build.ps1` | Publishes the app folder, zips it, then builds the installer around the zip. |
 | `scripts/make-icon.ps1` | Generates `Assets/app.ico`. |
+| `native/` | Experimental Rust + Direct2D prototype of the wallpaper engine, used to measure what a native port would save. Not part of the app. See `native/README.md`. |
 
 ## App lifecycle: tray, single instance, background
 
@@ -73,10 +76,16 @@ The app has no main window. `App.OnStartup` reads the command line, then:
 - The welcome banner shows the first time settings open (`SetupDone` false).
 - `ShutdownMode=OnExplicitShutdown`: closing windows never exits. Only *Quit* (tray menu or settings), the quit signal, or signing out does. `OnExit` and `OnSessionEnding` dispose `AppController`, which restores the static wallpaper and removes the tray icon.
 - Unhandled UI exceptions are logged to `%AppData%\MusicVisualizer\error.log` and shown once; the app keeps running.
+- **Stop vs exit:** *Stop* (tray menu, settings) turns off the wallpaper, closes windows, stops capture, saves and trims memory, but keeps the tray icon, so the user can start it again. *Exit completely* (tray menu only) shuts the app down.
+- **Saving settings:** `AppSettings.Save` writes `settings.json.tmp` and swaps it in with `File.Replace`, keeping the previous file as `settings.json.bak`, so a crash, kill or power cut mid-save can't leave a half-written file. `Load` falls back to the `.bak` if the main file is unreadable, and only then to defaults.
 
 `AppController` is the hub. Windows talk to it (`RunAsWallpaper`, `SetWallpaper`, `SetMode`, `SetAppearance`, `SetBackgroundImage`, `SetScreen`, `SetListen`, `ShowSettings`, `ShowVisualizer`, `Quit`) and listen to its `Changed` event to refresh. Appearance changes raise a separate `AppearanceChanged` event, because sliders fire it many times a second and the settings window shouldn't rebuild itself each time. Settings are saved on every change (appearance changes are debounced by 600 ms), since the app is rarely closed.
 
 The settings preview is an exact replica: a `Grid` the size of the wallpaper screen holding a `VisualizerCanvas` and a `NowPlayingCard`, inside a `Viewbox` that scales it to fit. So positions, sizes and the song-title card look the same as on the desktop.
+
+**Per-style looks:** `AppSettings.Look` is the current style's look; `AppSettings.Looks` keeps every style's own copy by name. `SetMode` saves the current look under its style, restores the new style's saved look (or a copy of the current one the first time), and keeps the shared wallpaper settings with `Appearance.CopySharedFrom` (frame rate, background picture and dim, song-title card). `SetAppearance` also writes through to `Looks`. Whole-look changes raise `LookSwitched`, so the settings window reloads all its controls.
+
+**Style cycle:** `SetCycle` stores the chosen styles, `CycleBy` (Time or Songs), the interval and *random order*. By time, a 1 s `DispatcherTimer` runs only while cycling by time with at least two styles. By songs, `NowPlaying.Changed` counts changes of title and artist (not the first song seen). `NextCycleStyle` picks the next chosen style in style order, or a random one that isn't the current one, and calls `SetMode(next, fromCycle: true)`. Picking a style by hand restarts the count, so it gets a full turn.
 
 `RunAsWallpaper` is the main action: it turns the wallpaper on and closes the settings window, so nothing covers it.
 
@@ -130,14 +139,17 @@ To tune how the visuals feel, change `MinDb`/`MaxDb` (sensitivity), the tilt, or
 
 ## Rendering: `VisualizerCanvas`
 
-A `FrameworkElement` hooked to `CompositionTarget.Rendering`, which fires once per display frame. Each tick it runs the analyzer, then calls `InvalidateVisual()`, and WPF calls `OnRender`, where everything is drawn with `DrawingContext`.
+A `FrameworkElement` with its own frame loop. Each tick it runs the analyzer, then calls `InvalidateVisual()`, and WPF calls `OnRender`, where everything is drawn with `DrawingContext`.
+
+- **Frame loop:** at 60 fps it uses `CompositionTarget.Rendering` (once per display frame); below that, a `DispatcherTimer` at the chosen rate (`Appearance.FrameRate`, 30 by default), because subscribing to `Rendering` alone keeps WPF composing at the full display rate. `dt` comes from a `Stopwatch`. Setting `IsPaused` (window minimized, wallpaper covered or idle) unsubscribes/stops the loop entirely, so a paused canvas costs no CPU.
+- **Cheap drawing:** no `PushOpacity` or non-rectangular `PushClip` in the per-frame path. Each of those makes WPF render into an extra offscreen layer every frame. Faded shapes use translucent brushes instead (`Faded()` caches palette colours at a given opacity; `WithOpacity()` copies a brush with its own `Opacity`), and the album cover is an `ImageBrush` filling a rounded rectangle or ellipse rather than a clipped image. Line styles use bevel joins (round joins are much more expensive to tessellate) and 256 (Wave) / 200 (Ring) points. Measured with the wallpaper at 30 fps: Wave + cover went from about 52% to 25% of one core. WPF still tessellates changing geometry on the CPU every frame, which is what most of the remaining cost is.
 
 - **Brushes and pens are cached:** a palette of 360 frozen brushes, 36 glow gradients, and radial pens created on demand (reset when the spoke width changes). This keeps garbage-collection pressure low at 60 fps.
 - **Colour** (`Appearance.Colors`): the palette is 360 frozen brushes. For *Rainbow* it is the hue wheel and `ColorIndex(t)` returns `BaseHue + t × spread`, where `BaseHue` drifts faster with the bass. For *Song art colors* and *My colors* it is 360 steps of a two-colour gradient and `ColorIndex(t)` maps the position along the spectrum (0..1) straight onto it. Song-art mode uses `AlbumColors` and never falls back to the rainbow: before the first cover is known it uses the user's two colours. When the song changes, the drawn colours glide towards the new ones (exponential, about a second), and the palette is rebuilt only when the colours actually change.
 - **Appearance** (`VisualizerCanvas.Look`): positions and sizes are fractions of the surface, so the settings preview (sized to the wallpaper screen's aspect ratio) matches the wallpaper. `PositionX/Y` is the visualizer's centre: the bars group (bars plus reflection) is centred on it, as are the radial ring and the wave's midline. `Size` scales bar height and width (width capped at the screen), the ring, and the wave. `Intensity` is a gain on the analyzer (`SpectrumAnalyzer.Gain`, added in dB before the −72…−12 dB mapping) and on the wave amplitude; the slider is logarithmic, ¼× to 4×. Glow strength multiplies the glow's opacity.
 - **Background picture:** decoded once per path (at most 3840 px wide, `OnLoad` so the file isn't locked) and drawn like Windows' *Fill*: scaled to cover, centred, cropped. A black layer at `BackgroundDim` opacity darkens it. `AppController.SetBackgroundImage` copies the chosen file to `%AppData%\MusicVisualizer\background-<ticks>.<ext>` and deletes older copies; the new name each time makes every view reload it.
 - **Styles:** *Bars*, *Mirror* (bars up and down from the centre line), *Blocks* (each bar drawn as up to 20 separate cells), *Spectrum* (a curve through the bar tops made of quadratic Béziers through the midpoints between neighbours, filled at low opacity; its reflection is the same geometry under a flipping `MatrixTransform`), *Radial* (spokes around a circle), *Ring* (the waveform as the radius of a closed circle; the last samples are blended into the first so it closes without a jump) and *Wave*. Line and area styles use `SpectrumBrush()`, a left-to-right gradient through five points of the current palette.
-- **Album art in the middle** (`Appearance.AlbumArt`): the canvas follows the now-playing service (`VisualizerCanvas.Bind`) for the cover, title and artist. The cover is always at the centre of the surface (`w/2, h/2`); `PositionX/Y` move only the visualizer. For Radial and Ring it is drawn after the style, clipped to a circle sized like the style's own circle and with its bass pulse (just inside Radial's ring line; about 72% of Ring's base radius). For the other styles it's drawn before the style, so it sits behind the bars, as a rounded square `AlbumSize` × screen height, scaled by `1 + bass² × 0.12`, the same pulse the glow uses. The caption (title and artist) is `FormattedText`, cached until the song or size changes, drawn last with a dark drop shadow. `CaptionPlace` puts it below, above, left or right of the cover: just past the cover's edge for square covers, and past where the spokes or waveform usually reach for round styles. *Hide the song title card* sets `Title = Hidden` and remembers the previous position for when it's unticked.
+- **Album art in the middle** (`Appearance.AlbumArt`): the canvas follows the now-playing service (`VisualizerCanvas.Bind`) for the cover, title and artist. The cover is always at the centre of the surface (`w/2, h/2`); `PositionX/Y` move only the visualizer. For Radial and Ring it is drawn after the style, clipped to a circle sized like the style's own circle and with its bass pulse (just inside Radial's ring line; about 72% of Ring's base radius). For the other styles it's drawn before the style, so it sits behind the bars, as a rounded square `AlbumSize` × screen height. Both kinds scale with their own bounce envelope (`UpdateBounce`): the target is `bass^(1 + 3 × sharpness)`, so a sharper setting reacts only to strong hits, and it rises and falls at rates that also grow with sharpness (soft swell to quick kick). The size is `1 + envelope × 0.12 × AlbumBounce` for square covers and `× 0.3` for round ones. The caption (title and artist) is `FormattedText`, cached until the song or size changes, drawn last with a dark drop shadow. Its font size and position come from the cover's resting size, not the bouncing one, so the text stays still; it sits past the largest the cover can bounce to, plus a gap (`CaptionGap`). `CaptionPlace` puts it below, above, left or right of the cover: just past the cover's edge for square covers, and past where the spokes or waveform usually reach for round styles. *Hide the song title card* sets `Title = Hidden` and remembers the previous position for when it's unticked.
 - **Width** sets how much of the screen the bar-based styles and the wave span (`BarsWidth`); *Size* sets height and the size of the round styles.
 - **Wave mode** starts drawing at a rising zero-crossing. This works like an oscilloscope trigger and keeps the waveform from sliding sideways.
 - `IsPaused` skips analysis and drawing (window minimized, or the wallpaper is showing instead).
@@ -217,7 +229,11 @@ The quickest checks:
 
 If the window sits in the right place but the screen shows only the plain wallpaper, the layered flag is missing.
 
-## Memory
+## Memory and CPU
+
+- **Pause when covered:** once a second `AppController.CheckIdle` asks `Occlusion.IsCovered` whether a visible, non-minimized, non-cloaked app window covers at least 90% of the wallpaper's screen (a maximized window covers all but the taskbar). Shell windows, our own windows and tool/click-through/no-activate overlays are ignored. While covered the wallpaper stops drawing (`WallpaperWindow.Covered`).
+- **Giving memory back:** after 30 s of not drawing (covered or quiet, with no window open), after *Stop*, and when the settings window closes, `Memory.Trim()` runs a compacting GC and `SetProcessWorkingSetSize(-1, -1)`, so Windows can reclaim the pages until drawing resumes.
+- The copy of the desktop background used for the quiet-time fade is decoded at screen width and released once the visualizer is back.
 
 The app runs all day, so it favours a small footprint: non-concurrent GC, no dynamic PGO, and `System.GC.ConserveMemory = 7` (see the csproj). It's also installed as a self-contained folder, not a single-file exe: single-file apps load the runtime from inside the exe (decompressed into memory when compressed), so Windows can't map and share those files. Measured with the wallpaper running: about 333 MB working set / 172 MB private for the compressed single file, about 178 MB / 92 MB for 1.4.0.
 

@@ -10,6 +10,7 @@ A Windows music visualizer (C# / WPF) that lives in your **system tray** and run
 - **Album cover in the middle** of the screen, bouncing with the beat, with the song and artist next to it wherever you like.
 - **Make it yours:** style, colors (song-art colors, rainbow or your own), position, size, intensity, background glow and a picture behind the visualizer, with a live preview.
 - **Listen to the apps you choose:** everything on the PC, or only selected apps such as Spotify or a browser. Other sounds (game audio, notifications, calls) are ignored.
+- **Cycle through styles** on a timer or every few songs, each with its own saved settings.
 - **Seven styles:** Bars, Mirror, Blocks, Spectrum, Radial, Ring and Wave, with as many or as few bars as you like.
 - **Back to your normal wallpaper when it's quiet:** when nothing is playing, your usual desktop background fades back in, and the visualizer returns with the music.
 - **Spotify now-playing:** album art, title, artist and progress, read from the Spotify desktop app through Windows. No sign-in, free accounts included.
@@ -41,7 +42,8 @@ Windows may show a SmartScreen warning the first time, because the installer isn
 | Start the wallpaper | Start **Music Visualizer** (Start menu, desktop shortcut), or click **▶ Run as wallpaper** in settings, or right-click the tray icon → **Wallpaper** |
 | Change how it looks | Click the tray icon, or start **Music Visualizer Settings** |
 | Stop the wallpaper | **■ Stop wallpaper** in settings, or right-click the tray icon → **Wallpaper** |
-| Quit | Right-click the tray icon → **Quit** (your normal wallpaper comes back) |
+| Stop everything | Right-click the tray icon → **Stop**, or **Stop** in settings. Your normal wallpaper comes back, and Music Visualizer stays in the tray, using almost no memory or CPU, so one click starts it again. |
+| Close it completely | Right-click the tray icon → **Exit completely** |
 
 Starting **Music Visualizer** again while the wallpaper is already running opens settings.
 
@@ -53,11 +55,12 @@ The left side shows a **live preview** shaped like your wallpaper screen, the **
 
 | Setting | What it does |
 |---|---|
-| **Look** | The style (see below). Peak caps and reflection on/off. **Number of bars** (16 to 128; fewer looks bolder and simpler) and bar thickness. |
+| **Look** | The style (see below). **Each style remembers its own settings** (colors, position, size, bars, intensity, album art...); frame rate, the background picture and the song title card are shared. Peak caps and reflection on/off. **Number of bars** (16 to 128; fewer looks bolder and simpler) and bar thickness. |
 | **Colors** | *Song art colors* (the default): a gradient between the two main colors of the album cover that's playing, for every song. Black-and-white covers give greys and white, and when the music stops it keeps the last song's colors. It never switches to the rainbow, and colors blend over about a second when the song changes. *Rainbow*: cycles colors with the beat. *My colors*: a gradient between two colors; pick from the swatches or type a hex code like `#FF4D6D`. |
 | **Position and size** | Move it left/right and up/down, scale it (**Size**), and set how much of the screen's **Width** it spans. **Center it** puts it back in the middle. |
+| **Cycle styles** | *Switch between styles automatically*: tick the styles to use, then change **after some time** (15 s to 1 hour) or **after some songs** (1 to 10), in order or in *random order*. Each style shows with its own saved settings. |
 | **Song title** | Where the song card (album art, song and artist) appears on the wallpaper: any corner, top or bottom center, or hidden. When it's hidden, *show it in the bottom right for a few seconds when a new song starts* (on by default) still announces each new song. |
-| **Album art** | *Show the album cover in the middle*. The cover always stays in the center of the screen; the position sliders move only the visualizer. Radial and Ring size it to fit their circle; the other styles show it behind the visualizer, bouncing with the beat and the glow. When it's on you also get **Cover size**, where to write the **song and artist** (below, above, left or right of the cover, or hidden), and *Hide the song title card*. |
+| **Album art** | *Show the album cover in the middle*. The cover always stays in the center of the screen; the position sliders move only the visualizer. Radial and Ring size it to fit their circle; the other styles show it behind the visualizer, bouncing with the beat and the glow. When it's on you also get **Cover size**, **Bounce** (from still to big), **Bounce sharpness** (from a soft swell with the bass to a sharp kick on strong beats), where to write the **song and artist** (below, above, left or right of the cover, or hidden), and *Hide the song title card*. |
 | **Intensity** | From *Calm* to *Wild*: how strongly it reacts to the music. Turn it up for quiet music. |
 | **Sensitivity by frequency** | Four sliders that make parts of the sound move it more or less (see below). **Even out** resets them. |
 | **Background** | The glow that pulses with the bass (on/off and strength), and a **picture behind the visualizer**: choose a file, or **Use my current wallpaper**. **Darken picture** helps the visualizer stand out. The picture is copied into the app's settings folder, so moving the original doesn't break it. |
@@ -94,9 +97,16 @@ The left side shows a **live preview** shaped like your wallpaper screen, the **
 
 They affect the bar-based styles and Spectrum. Ring and Wave draw the raw sound wave, so only *Intensity* changes them.
 
-**General tab:** **Start with Windows** starts it in the tray when you sign in, and brings the wallpaper back if it was on.
+**General tab:** **Start with Windows** starts it in the tray when you sign in, and brings the wallpaper back if it was on. Under **Performance**:
 
-The bottom-left buttons open the **visualizer window** or **quit**.
+| Setting | What it does |
+|---|---|
+| **Frame rate** | 15, 24, 30 (default) or 60 fps. Lower uses less CPU and battery; 60 uses about twice the CPU of 30. |
+| **Pause while a maximized or full-screen window covers the wallpaper** | On by default. Nothing is drawn while you can't see it, so it uses almost no CPU while you work or game. |
+
+Settings are saved as you change them and survive crashes, updates and power cuts (a backup copy is kept).
+
+The bottom-left buttons open the **visualizer window** or **stop** (it stays in the tray).
 
 ### Visualizer window
 
@@ -151,11 +161,13 @@ dotnet run                       # run in development
 .\build.ps1 -Portable            # also publish\MusicVisualizer.exe, one file you can run without installing
 ```
 
+`native/` holds an experimental Rust prototype of the wallpaper engine, used to measure how much a native version would save (about 2–3× less CPU and 4× less memory). It isn't part of the app; see [native/README.md](native/README.md).
+
 The version comes from `<Version>` in `MusicVisualizer.csproj`. The icon is generated by `scripts\make-icon.ps1`; rerun it if you change the design.
 
 `publish\app\` and the `-Portable` exe both run without installing (Windows 10/11 x64, no .NET needed), but then *Start with Windows* points at wherever you ran them from. The portable exe uses more memory than the installed folder (see below).
 
-**Memory:** the installed app uses about 90 MB of its own memory while running the wallpaper. It's installed as a normal folder (about 185 MB on disk) rather than one big exe, because a single-file exe has to unpack .NET into memory, which used about 80 MB more.
+**Memory and CPU:** while drawing the wallpaper at 30 fps the installed app uses about 70–110 MB of its own memory and roughly 10–30% of one CPU core, depending on the style (Bars is the lightest; Wave and Ring the heaviest; the album cover adds a little). While paused (covered, quiet or stopped) it uses well under 1% CPU and gives most of its memory back to Windows. It's installed as a normal folder (about 185 MB on disk) rather than one big exe, because a single-file exe has to unpack .NET into memory.
 
 ## Where things are stored
 

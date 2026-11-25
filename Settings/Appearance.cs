@@ -53,6 +53,10 @@ public sealed class Appearance
     /// <summary>Write the song and artist next to the centred cover.</summary>
     public bool AlbumCaption { get; set; } = true;
     public CaptionPlace CaptionPlace { get; set; } = CaptionPlace.Below;
+    /// <summary>How much the cover grows on the beat, 0 (still) .. 3 (1 = default, about 12% for square covers).</summary>
+    public double AlbumBounce { get; set; } = 1.0;
+    /// <summary>How punchy the bounce is, 0 (soft swell) .. 1 (sharp kick: only strong hits, quick fall back).</summary>
+    public double AlbumSharpness { get; set; } = 0.35;
 
     // Intensity
     /// <summary>How strongly it reacts, 0.25 .. 4 (1 = default). Applied as gain before the dB mapping.</summary>
@@ -63,6 +67,10 @@ public sealed class Appearance
     public double EqLowMids { get; set; }
     public double EqHighMids { get; set; }
     public double EqTreble { get; set; }
+
+    // Performance
+    /// <summary>Frames per second, 15 .. 60. Lower uses less CPU; 30 looks smooth for a wallpaper.</summary>
+    public int FrameRate { get; set; } = 30;
 
     // Colours
     public ColorMode Colors { get; set; } = ColorMode.AlbumArt;
@@ -79,4 +87,17 @@ public sealed class Appearance
     public double BackgroundDim { get; set; } = 0.35;
 
     public Appearance Clone() => (Appearance)MemberwiseClone();
+
+    /// <summary>
+    /// Copies the settings that belong to the wallpaper rather than to a style (frame rate, background
+    /// picture, song-title card), so switching style keeps them. Everything else is per style.
+    /// </summary>
+    public void CopySharedFrom(Appearance other)
+    {
+        FrameRate = other.FrameRate;
+        BackgroundImage = other.BackgroundImage;
+        BackgroundDim = other.BackgroundDim;
+        Title = other.Title;
+        PeekCard = other.PeekCard;
+    }
 }

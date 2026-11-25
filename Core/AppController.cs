@@ -55,12 +55,16 @@ public sealed class AppController : IDisposable
     /// <summary>Raised when <see cref="AppSettings.Look"/> changes (often, while a slider is dragged).</summary>
     public event EventHandler? AppearanceChanged;
 
+    /// <summary>Raised when the whole look is replaced (another style was picked, by hand or by the cycle).</summary>
+    public event EventHandler? LookSwitched;
+
     public AppController()
     {
         _tray.SettingsRequested += (_, _) => ShowSettings();
         _tray.VisualizerRequested += (_, _) => ShowVisualizer();
         _tray.WallpaperToggled += (_, _) => SetWallpaper(!WallpaperRunning, showErrors: true);
-        _tray.QuitRequested += (_, _) => Quit();
+        _tray.StopRequested += (_, _) => Stop();
+        _tray.ExitRequested += (_, _) => Quit();
 
         NowPlaying.Changed += (_, _) => { UpdateAudio(); ApplyTheme(); };
         Engine.StateChanged += (_, _) => Dispatcher.BeginInvoke(() => { ApplyTheme(); RaiseChanged(); });
@@ -69,6 +73,8 @@ public sealed class AppController : IDisposable
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Settings.Save(); };
         _idleTimer.Tick += (_, _) => CheckIdle();
         _idleTimer.Start();
+        _cycleTimer.Tick += (_, _) => OnCycleTick();
+        NowPlaying.Changed += (_, _) => OnSongForCycle();
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         // A hidden top-level window, only so we receive the "TaskbarCreated" broadcast
@@ -95,6 +101,7 @@ public sealed class AppController : IDisposable
     {
         StartWithWindows.Repair();
         NowPlaying.Start();
+        UpdateCycleTimer();
         if (launch == LaunchMode.Wallpaper) Settings.WallpaperEnabled = true;
         if (Settings.WallpaperEnabled && !TryAttachWallpaper(out _))
             StartReattachRetries(); // Explorer may not be ready yet right after sign-in
@@ -135,6 +142,7 @@ public sealed class AppController : IDisposable
                 Settings.Save();
                 UpdateAudio();
                 ShowTrayHintOnce();
+                Memory.Trim(); // drop the preview and window resources
             };
             _settingsWindow.Show();
             UpdateAudio();
@@ -172,17 +180,113 @@ public sealed class AppController : IDisposable
 
     // ------------------------------------------------------------ settings
 
-    public void SetMode(VisualMode mode)
+    /// <summary>
+    /// Switches style. Each style keeps its own look: the current one is saved under its name and the
+    /// new style's saved look is restored (or a copy of the current one the first time), keeping the
+    /// shared wallpaper settings.
+    /// </summary>
+    public void SetMode(VisualMode mode, bool fromCycle = false)
     {
+        var current = Mode;
+        Settings.Looks[current.ToString()] = Settings.Look.Clone();
+        if (mode != current)
+        {
+            var next = Settings.Looks.TryGetValue(mode.ToString(), out var saved) ? saved.Clone() : Settings.Look.Clone();
+            next.CopySharedFrom(Settings.Look);
+            Settings.Look = next;
+        }
         Settings.Mode = mode.ToString();
         Settings.Save();
-        if (_wallpaper is not null) _wallpaper.Mode = mode;
+        if (!fromCycle) ResetCycle(); // a style picked by hand gets a full turn
+        if (_wallpaper is not null)
+        {
+            _wallpaper.Mode = mode;
+            _wallpaper.Look = Settings.Look;
+        }
+        AppearanceChanged?.Invoke(this, EventArgs.Empty);
+        LookSwitched?.Invoke(this, EventArgs.Empty);
         RaiseChanged();
+    }
+
+    // ------------------------------------------------------------ style cycle
+
+    private readonly DispatcherTimer _cycleTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private DateTime _cycleSince = DateTime.UtcNow;
+    private int _songsSinceSwitch;
+    private string? _cycleSongKey;
+    private readonly Random _random = new();
+
+    public void SetCycle(bool enabled, IEnumerable<VisualMode> modes, CycleBy by, int seconds, int songs, bool shuffle)
+    {
+        Settings.CycleEnabled = enabled;
+        Settings.CycleModes = modes.Select(m => m.ToString()).Distinct().ToList();
+        Settings.CycleBy = by;
+        Settings.CycleSeconds = Math.Clamp(seconds, 5, 24 * 3600);
+        Settings.CycleSongs = Math.Clamp(songs, 1, 100);
+        Settings.CycleShuffle = shuffle;
+        SaveSoon();
+        ResetCycle();
+        UpdateCycleTimer();
+    }
+
+    private void ResetCycle()
+    {
+        _cycleSince = DateTime.UtcNow;
+        _songsSinceSwitch = 0;
+    }
+
+    private List<VisualMode> CycleList() =>
+        Settings.CycleModes.Select(n => Enum.TryParse<VisualMode>(n, out var m) ? (VisualMode?)m : null)
+            .OfType<VisualMode>().Distinct().OrderBy(m => (int)m).ToList();
+
+    /// <summary>The timer only runs while cycling by time; song counting happens on now-playing changes.</summary>
+    private void UpdateCycleTimer()
+    {
+        bool run = Settings.CycleEnabled && Settings.CycleBy == CycleBy.Time && CycleList().Count >= 2;
+        if (run) _cycleTimer.Start(); else _cycleTimer.Stop();
+    }
+
+    private void OnSongForCycle()
+    {
+        var t = NowPlaying.Current;
+        if (t is null) return;
+        string key = $"{t.Title}|{t.Artist}";
+        if (key == _cycleSongKey) return;
+        bool first = _cycleSongKey is null;
+        _cycleSongKey = key;
+        if (first || !Settings.CycleEnabled || Settings.CycleBy != CycleBy.Songs) return;
+        if (++_songsSinceSwitch >= Settings.CycleSongs) NextCycleStyle();
+    }
+
+    private void OnCycleTick()
+    {
+        if ((DateTime.UtcNow - _cycleSince).TotalSeconds >= Settings.CycleSeconds) NextCycleStyle();
+    }
+
+    /// <summary>Moves to the next chosen style (in order, or at random without repeating the current one).</summary>
+    private void NextCycleStyle()
+    {
+        var list = CycleList();
+        ResetCycle();
+        if (list.Count < 2) return;
+        VisualMode next;
+        if (Settings.CycleShuffle)
+        {
+            var others = list.Where(m => m != Mode).ToList();
+            next = others[_random.Next(others.Count)];
+        }
+        else
+        {
+            int i = list.IndexOf(Mode);
+            next = list[(i + 1) % list.Count]; // not in the list (-1) → the first one
+        }
+        SetMode(next, fromCycle: true);
     }
 
     public void SetAppearance(Appearance look)
     {
         Settings.Look = look.Clone();
+        Settings.Looks[Mode.ToString()] = Settings.Look.Clone();
         SaveSoon();
         if (_wallpaper is not null) _wallpaper.Look = Settings.Look;
         AppearanceChanged?.Invoke(this, EventArgs.Empty);
@@ -228,6 +332,12 @@ public sealed class AppController : IDisposable
         _saveTimer.Start();
     }
 
+    public void SetPauseWhenCovered(bool pause)
+    {
+        Settings.PauseWhenCovered = pause;
+        SaveSoon();
+    }
+
     public void SetHideWhenSilent(bool hide, double seconds)
     {
         Settings.HideWhenSilent = hide;
@@ -239,9 +349,34 @@ public sealed class AppController : IDisposable
     /// While nothing the app listens to makes a sound for <see cref="AppSettings.SilentSeconds"/>,
     /// show the normal desktop wallpaper; bring the visualizer back as soon as sound returns.
     /// </summary>
+    private int _idleTicks;
+    private DateTime _pausedSince = DateTime.MaxValue;
+    private bool _trimmed;
+
     private void CheckIdle()
     {
         if (_wallpaper is null) return;
+
+        // Once a second: is the wallpaper's screen hidden behind a maximized / full-screen window?
+        if (++_idleTicks % 4 == 0)
+            _wallpaper.Covered = Settings.PauseWhenCovered && Occlusion.IsCovered(WallpaperScreen.Bounds);
+
+        // After 30 s of not drawing, hand unused memory back to Windows (once per pause).
+        if (_wallpaper.IsPaused && _visualizer is null && _settingsWindow is null)
+        {
+            if (_pausedSince == DateTime.MaxValue) _pausedSince = DateTime.UtcNow;
+            if (!_trimmed && (DateTime.UtcNow - _pausedSince).TotalSeconds > 30)
+            {
+                Memory.Trim();
+                _trimmed = true;
+            }
+        }
+        else
+        {
+            _pausedSince = DateTime.MaxValue;
+            _trimmed = false;
+        }
+
         // Give capture a moment after the wallpaper appears, so it doesn't fade out before the first sound arrives.
         double quiet = Math.Min(Engine.SecondsSinceSound, (DateTime.UtcNow - _attachedAt).TotalSeconds);
         if (!Settings.HideWhenSilent) _wallpaper.SetIdle(false);
@@ -450,6 +585,23 @@ public sealed class AppController : IDisposable
             MessageBox.Show(message, "Music Visualizer", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    /// <summary>
+    /// Turns everything off (wallpaper, windows, audio capture) but stays in the tray, using as little
+    /// memory and CPU as possible, so the user can start it again with one click.
+    /// </summary>
+    public void Stop()
+    {
+        SetWallpaper(false, showErrors: false);
+        _visualizer?.Close();
+        _settingsWindow?.Close();
+        Engine.Stop();
+        Settings.Save();
+        _tray.SetTooltip("Music Visualizer: stopped (click to start again)");
+        _tray.ShowBalloon("Music Visualizer stopped", "It's still in the tray. Click the icon to start it again, or right-click → Exit completely to close it.");
+        Memory.Trim();
+    }
+
+    /// <summary>Closes the app completely (tray "Exit completely", installer, uninstaller, sign-out).</summary>
     public void Quit() => Application.Current.Shutdown();
 
     /// <summary>Called on exit: puts the normal wallpaper back and removes the tray icon.</summary>
@@ -461,6 +613,7 @@ public sealed class AppController : IDisposable
         _reattachTimer.Stop();
         _saveTimer.Stop();
         _idleTimer.Stop();
+        _cycleTimer.Stop();
         _visualizer?.Close();
         _settingsWindow?.Close();
         if (_wallpaper is not null)

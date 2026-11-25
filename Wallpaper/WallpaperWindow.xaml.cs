@@ -60,6 +60,25 @@ public partial class WallpaperWindow : Window
     /// <summary>True while the normal desktop wallpaper is showing instead (nothing playing).</summary>
     public bool IsIdle { get; private set; }
 
+    private bool _idleHidden, _covered;
+
+    /// <summary>Set while a maximized or full-screen window hides this screen: drawing stops until it's visible again.</summary>
+    public bool Covered
+    {
+        get => _covered;
+        set
+        {
+            if (value == _covered) return;
+            _covered = value;
+            UpdatePause();
+        }
+    }
+
+    /// <summary>True while nothing is being drawn (hidden because it's quiet, or covered by a window).</summary>
+    public bool IsPaused => _idleHidden || _covered;
+
+    private void UpdatePause() => Viz.IsPaused = IsPaused;
+
     /// <summary>
     /// Switches between the visualizer and the user's normal wallpaper. Going idle fades in a copy of
     /// the desktop background (same picture, fit and colour) and then hides the window, so the real
@@ -79,20 +98,24 @@ public partial class WallpaperWindow : Window
             fade.Completed += (_, _) =>
             {
                 if (!IsIdle) return; // woke up during the fade
-                Viz.IsPaused = true;
+                _idleHidden = true;
+                UpdatePause();
                 ShowWindow(hwnd, SW_HIDE);
             };
             Desk.BeginAnimation(OpacityProperty, fade);
         }
         else
         {
-            Viz.IsPaused = false;
+            _idleHidden = false;
+            UpdatePause();
             Desk.BeginAnimation(OpacityProperty, null);
             Desk.Opacity = 1;
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             // Back under the icons, above Explorer's own wallpaper layer (see DesktopWallpaper.MoveTo).
             DesktopWallpaper.MoveTo(hwnd, _screen);
-            Desk.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromSeconds(0.4)));
+            var fade = new DoubleAnimation(0, TimeSpan.FromSeconds(0.4));
+            fade.Completed += (_, _) => { if (!IsIdle) DeskImage.Source = null; }; // free the decoded picture
+            Desk.BeginAnimation(OpacityProperty, fade);
         }
     }
 
@@ -113,6 +136,7 @@ public partial class WallpaperWindow : Window
             img.UriSource = new Uri(path.ToString());
             img.CacheOption = BitmapCacheOption.OnLoad;
             img.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+            img.DecodePixelWidth = Math.Max(640, _screen.Width); // no bigger than the screen needs
             img.EndInit();
             img.Freeze();
             DeskImage.Source = img;

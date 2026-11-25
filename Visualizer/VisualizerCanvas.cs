@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using MusicVisualizer.Audio;
 using MusicVisualizer.NowPlaying;
 using MusicVisualizer.Settings;
@@ -29,7 +30,6 @@ public sealed class VisualizerCanvas : FrameworkElement
     private BitmapSource? _image;
 
     private AudioEngine? _engine;
-    private TimeSpan _lastFrame;
     private double _hueShift;
     private double _time;
 
@@ -44,8 +44,31 @@ public sealed class VisualizerCanvas : FrameworkElement
     /// <summary>Colours, position, size, intensity, glow and background picture.</summary>
     public Appearance Look { get; set; } = new();
 
-    /// <summary>Stops analysing and redrawing (window minimised, or the wallpaper is showing instead).</summary>
-    public bool IsPaused { get; set; }
+    /// <summary>
+    /// Stops analysing and redrawing (window minimised, desktop covered, nothing playing...). This stops
+    /// the frame loop itself, so a paused canvas costs no CPU at all.
+    /// </summary>
+    public bool IsPaused
+    {
+        get => _paused;
+        set
+        {
+            _paused = value;
+            UpdateLoop();
+        }
+    }
+
+    private bool _paused;
+
+    // Frame loop: WPF's per-frame Rendering event at 60 fps, or a timer for lower frame rates
+    // (the Rendering event alone keeps WPF composing at the full display rate).
+    private readonly DispatcherTimer _frameTimer = new(DispatcherPriority.Render);
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private double _lastTick;
+    private bool _onRendering;
+
+    // Album cover bounce: its own envelope of the bass, shaped by the Bounce sharpness setting.
+    private double _bounce;
 
     // The track shown by the "album art in the middle" option.
     private ImageSource? _art;
@@ -71,20 +94,50 @@ public sealed class VisualizerCanvas : FrameworkElement
     public VisualizerCanvas()
     {
         _background = Frozen(new SolidColorBrush(Color.FromRgb(0x0B, 0x0B, 0x12)));
-        Loaded += (_, _) => CompositionTarget.Rendering += OnFrame;
-        Unloaded += (_, _) => CompositionTarget.Rendering -= OnFrame;
+        _frameTimer.Tick += (_, _) => Tick();
+        Loaded += (_, _) => UpdateLoop();
+        Unloaded += (_, _) => UpdateLoop();
     }
 
     public void Attach(AudioEngine engine) => _engine = engine;
 
-    private void OnFrame(object? sender, EventArgs e)
+    /// <summary>Starts, stops or switches the frame loop to match loaded/paused state and the frame rate.</summary>
+    private void UpdateLoop()
     {
-        var t = ((RenderingEventArgs)e).RenderingTime;
-        if (t == _lastFrame) return; // Rendering can fire more than once per frame
-        double dt = _lastFrame == default ? 1 / 60.0 : (t - _lastFrame).TotalSeconds;
-        _lastFrame = t;
-        if (IsPaused) return;
+        bool run = IsLoaded && !_paused;
+        int fps = Math.Clamp(Look.FrameRate, 15, 60);
+        bool useRendering = run && fps >= 60;
+        bool useTimer = run && fps < 60;
+
+        if (useRendering != _onRendering)
+        {
+            if (useRendering) CompositionTarget.Rendering += OnRendering;
+            else CompositionTarget.Rendering -= OnRendering;
+            _onRendering = useRendering;
+        }
+        if (useTimer)
+        {
+            _frameTimer.Interval = TimeSpan.FromSeconds(1.0 / fps);
+            if (!_frameTimer.IsEnabled) _frameTimer.Start();
+        }
+        else _frameTimer.Stop();
+        _lastTick = _clock.Elapsed.TotalSeconds; // no catch-up jump after a pause
+    }
+
+    private void OnRendering(object? sender, EventArgs e) => Tick();
+
+    private void Tick()
+    {
+        double now = _clock.Elapsed.TotalSeconds;
+        double dt = now - _lastTick;
+        if (dt < 0.004) return; // Rendering can fire more than once per frame
+        _lastTick = now;
         dt = Math.Clamp(dt, 0, 0.1);
+
+        // The frame-rate setting may have changed since the loop was set up.
+        int fps = Math.Clamp(Look.FrameRate, 15, 60);
+        if ((fps >= 60) != _onRendering || (!_onRendering && Math.Abs(_frameTimer.Interval.TotalSeconds - 1.0 / fps) > 0.001))
+            UpdateLoop();
 
         int bars = Math.Clamp(Look.BarCount, 8, 128);
         if (bars != _analyzer.Bands.Length) _analyzer = new SpectrumAnalyzer(bars);
@@ -94,6 +147,7 @@ public sealed class VisualizerCanvas : FrameworkElement
         _time += dt;
         _hueShift = (_hueShift + dt * (6 + _analyzer.Bass * 50)) % 360;
         GlideAlbumColors(dt);
+        UpdateBounce(dt);
         InvalidateVisual();
     }
 
@@ -159,6 +213,31 @@ public sealed class VisualizerCanvas : FrameworkElement
             _glow[i] = Frozen(new RadialGradientBrush(Color.FromArgb(80, c.R, c.G, c.B), Color.FromArgb(0, c.R, c.G, c.B)));
         }
         _pens = null;
+        _faded.Clear();
+    }
+
+    // Semi-transparent copies of palette colours, so faded shapes are drawn with a translucent brush
+    // instead of PushOpacity: every PushOpacity makes WPF render into an extra offscreen layer.
+    private readonly Dictionary<int, Brush> _faded = new();
+
+    private Brush Faded(int index, double opacity)
+    {
+        int pct = (int)Math.Round(Math.Clamp(opacity, 0, 1) * 100);
+        int key = index * 101 + pct;
+        if (!_faded.TryGetValue(key, out var brush))
+        {
+            var c = _palette[index].Color;
+            _faded[key] = brush = Frozen(new SolidColorBrush(Color.FromArgb((byte)(255 * pct / 100), c.R, c.G, c.B)));
+        }
+        return brush;
+    }
+
+    /// <summary>A copy of a brush with its own opacity (no offscreen layer, unlike PushOpacity).</summary>
+    private static Brush WithOpacity(Brush brush, double opacity)
+    {
+        var copy = brush.CloneCurrentValue();
+        copy.Opacity = Math.Clamp(opacity, 0, 1);
+        return Frozen(copy);
     }
 
     private Pen PenFor(int index, double width)
@@ -186,10 +265,9 @@ public sealed class VisualizerCanvas : FrameworkElement
         {
             // Soft glow that pulses with the bass.
             double pulse = _analyzer.Bass * _analyzer.Bass;
-            dc.PushOpacity(Math.Clamp((0.25 + pulse * 1.5) * Look.GlowStrength, 0, 1));
             double gr = Math.Max(w, h) * (0.45 + pulse * 0.25) * Math.Max(0.5, Look.Size);
-            dc.DrawEllipse(_glow[ColorIndex(0.3, 0) / 10], null, center, gr, gr);
-            dc.Pop();
+            var glow = WithOpacity(_glow[ColorIndex(0.3, 0) / 10], (0.25 + pulse * 1.5) * Look.GlowStrength);
+            dc.DrawEllipse(glow, null, center, gr, gr);
         }
 
         // Album art: always at the centre of the screen; only the visualizer moves with the position
@@ -198,17 +276,20 @@ public sealed class VisualizerCanvas : FrameworkElement
         bool round = Mode is VisualMode.Radial or VisualMode.Ring;
         bool art = Look.AlbumArt && _art is not null;
         var mid = new Point(w / 2, h / 2);
+        double bounceAmount = Math.Clamp(Look.AlbumBounce, 0, 3);
+        // The caption is laid out from the cover's resting size, not its bouncing size, so the text
+        // stays still while the cover moves; it sits past the largest the cover can bounce to.
         double coverSize = 0, captionDistance = 0;
         if (art && !round)
         {
-            double pulse = _analyzer.Bass * _analyzer.Bass;
-            double side = Math.Clamp(Look.AlbumSize, 0.08, 0.8) * h * (1 + pulse * 0.12);
+            double baseSide = Math.Clamp(Look.AlbumSize, 0.08, 0.8) * h;
+            double side = baseSide * (1 + _bounce * 0.12 * bounceAmount);
             var rect = new Rect(mid.X - side / 2, mid.Y - side / 2, side, side);
-            dc.PushClip(new RectangleGeometry(rect, side * 0.06, side * 0.06));
-            dc.DrawImage(_art, rect);
-            dc.Pop();
-            coverSize = side;
-            captionDistance = side / 2 + side * 0.06;
+            // Filling a rounded rectangle with the cover is much cheaper than clipping an image
+            // (a non-rectangular clip makes WPF render through an extra layer every frame).
+            dc.DrawRoundedRectangle(ArtBrush(), null, rect, side * 0.06, side * 0.06);
+            coverSize = baseSide;
+            captionDistance = baseSide / 2 * (1 + 0.12 * bounceAmount) + CaptionGap(baseSide);
         }
 
         switch (Mode)
@@ -225,23 +306,53 @@ public sealed class VisualizerCanvas : FrameworkElement
         if (art && round)
         {
             double size = Math.Min(w, h) * Look.Size;
-            double radius = Mode == VisualMode.Radial
-                ? size * 0.17 * (1 + _analyzer.Bass * _analyzer.Bass * 0.35) - 12 // fits inside the ring line
-                : size * 0.22 * (1 + _analyzer.Bass * _analyzer.Bass * 0.25) * 0.72;  // fits inside the waveform
-            radius = Math.Max(4, radius);
-            dc.PushClip(new EllipseGeometry(mid, radius, radius));
-            dc.DrawImage(_art, new Rect(mid.X - radius, mid.Y - radius, radius * 2, radius * 2));
-            dc.Pop();
-            coverSize = radius * 2;
-            // Clear the spokes / waveform when the circle is around the cover; otherwise just the cover's edge.
-            bool circleAroundCover = (center - mid).Length < radius;
-            captionDistance = circleAroundCover ? Math.Max(radius + 10, size * 0.35) : radius + 10;
+            double baseRadius = Math.Max(4, Mode == VisualMode.Radial
+                ? size * 0.17 - 12        // fits inside the ring line
+                : size * 0.22 * 0.72);    // fits inside the waveform
+            double radius = baseRadius * (1 + _bounce * 0.3 * bounceAmount);
+            dc.DrawEllipse(ArtBrush(), null, mid, radius, radius);
+            coverSize = baseRadius * 2;
+            // Past the biggest bounce, and past the spokes / waveform when the circle is around the cover.
+            double clearCover = baseRadius * (1 + 0.3 * bounceAmount) + CaptionGap(baseRadius * 2);
+            bool circleAroundCover = (center - mid).Length < baseRadius;
+            captionDistance = circleAroundCover ? Math.Max(clearCover, size * 0.38) : clearCover;
         }
 
         if (art && Look.AlbumCaption) DrawCaption(dc, mid, captionDistance, coverSize);
     }
 
     /// <summary>Song title and artist, centred under the cover, with a soft shadow so they read on any background.</summary>
+    private ImageSource? _artBrushSource;
+    private ImageBrush? _artBrush;
+
+    /// <summary>The current cover as a frozen brush, rebuilt only when the song's cover changes.</summary>
+    private ImageBrush ArtBrush()
+    {
+        if (_artBrush is null || !ReferenceEquals(_artBrushSource, _art))
+        {
+            _artBrushSource = _art;
+            _artBrush = Frozen(new ImageBrush(_art) { Stretch = Stretch.UniformToFill });
+        }
+        return _artBrush;
+    }
+
+    /// <summary>Space between the cover (at its biggest) and the caption.</summary>
+    private static double CaptionGap(double coverSize) => 18 + coverSize * 0.08;
+
+    /// <summary>
+    /// The cover's bounce: rises with the bass and falls back. Sharpness 0 gives a soft swell that
+    /// follows all of the bass; 1 gives a punchy kick that only big hits trigger (the bass is raised
+    /// to a higher power) and that drops back quickly.
+    /// </summary>
+    private void UpdateBounce(double dt)
+    {
+        double sharp = Math.Clamp(Look.AlbumSharpness, 0, 1);
+        double target = Math.Pow(_analyzer.Bass, 1 + 3 * sharp);
+        double rise = 1 - Math.Exp(-dt * (12 + 50 * sharp));
+        double fall = 1 - Math.Exp(-dt * (3 + 22 * sharp));
+        _bounce += (target - _bounce) * (target > _bounce ? rise : fall);
+    }
+
     /// <param name="cover">Centre of the cover.</param>
     /// <param name="distance">How far from the centre the text starts, in the chosen direction.</param>
     private void DrawCaption(DrawingContext dc, Point cover, double distance, double coverSize)
@@ -277,18 +388,18 @@ public sealed class VisualizerCanvas : FrameworkElement
         if (_artistText is not null) DrawShadowed(dc, _artistText, x, top + _titleText.Height + gap, align, 0.75);
     }
 
+    private static readonly Brush ShadowStrong = Frozen(new SolidColorBrush(Color.FromArgb(140, 0, 0, 0)));
+    private static readonly Brush ShadowWeak = Frozen(new SolidColorBrush(Color.FromArgb(105, 0, 0, 0)));
+    private static readonly Brush TextWeak = Frozen(new SolidColorBrush(Color.FromArgb(191, 255, 255, 255)));
+
     /// <summary>Draws text with a dark drop shadow; <paramref name="align"/> 0 = starts at x, 0.5 = centred, 1 = ends at x.</summary>
     private static void DrawShadowed(DrawingContext dc, FormattedText text, double x, double top, double align, double opacity)
     {
         var at = new Point(x - text.Width * align, top);
-        text.SetForegroundBrush(Brushes.Black);
-        dc.PushOpacity(0.55 * opacity);
+        text.SetForegroundBrush(opacity >= 1 ? ShadowStrong : ShadowWeak);
         dc.DrawText(text, new Point(at.X + 1.5, at.Y + 1.5));
-        dc.Pop();
-        text.SetForegroundBrush(Brushes.White);
-        dc.PushOpacity(opacity);
+        text.SetForegroundBrush(opacity >= 1 ? Brushes.White : TextWeak);
         dc.DrawText(text, at);
-        dc.Pop();
     }
 
 
@@ -312,9 +423,7 @@ public sealed class VisualizerCanvas : FrameworkElement
 
         if (Look.BackgroundDim > 0)
         {
-            dc.PushOpacity(Math.Clamp(Look.BackgroundDim, 0, 0.95));
-            dc.DrawRectangle(_dim, null, new Rect(0, 0, w, h));
-            dc.Pop();
+            dc.DrawRectangle(WithOpacity(_dim, Math.Clamp(Look.BackgroundDim, 0, 0.95)), null, new Rect(0, 0, w, h));
         }
     }
 
@@ -347,15 +456,13 @@ public sealed class VisualizerCanvas : FrameworkElement
         }
 
         if (!Look.Reflection) return;
-        dc.PushOpacity(0.16);
         for (int i = 0; i < n; i++)
         {
             double x = left + i * slot + (slot - barW) / 2;
             double rh = bands[i] * maxH * 0.3;
             if (rh < 1) continue;
-            dc.DrawRectangle(_palette[ColorIndex((double)i / n, 200)], null, new Rect(x, baseline + 4, barW, rh));
+            dc.DrawRectangle(Faded(ColorIndex((double)i / n, 200), 0.16), null, new Rect(x, baseline + 4, barW, rh));
         }
-        dc.Pop();
     }
 
     private void DrawRadial(DrawingContext dc, double w, double h, Point c)
@@ -374,14 +481,11 @@ public sealed class VisualizerCanvas : FrameworkElement
         {
             double len = 3 + bands[i] * maxLen;
             var pen = PenFor(ColorIndex((double)i / n, 240), penW);
+            // Mirrored pair: same height, angle -90° ± t. cos is shared; sin flips sign.
             double t = (i + 0.5) / n * Math.PI;
-            foreach (double a in new[] { -Math.PI / 2 + t, -Math.PI / 2 - t })
-            {
-                double cos = Math.Cos(a), sin = Math.Sin(a);
-                dc.DrawLine(pen,
-                    new Point(c.X + cos * r, c.Y + sin * r),
-                    new Point(c.X + cos * (r + len), c.Y + sin * (r + len)));
-            }
+            double cos = Math.Cos(-Math.PI / 2 + t), sin = Math.Sin(-Math.PI / 2 + t);
+            dc.DrawLine(pen, new Point(c.X + cos * r, c.Y + sin * r), new Point(c.X + cos * (r + len), c.Y + sin * (r + len)));
+            dc.DrawLine(pen, new Point(c.X - cos * r, c.Y + sin * r), new Point(c.X - cos * (r + len), c.Y + sin * (r + len)));
         }
 
         var ring = Frozen(new Pen(_palette[ColorIndex(0, 0)], 2));
@@ -400,7 +504,7 @@ public sealed class VisualizerCanvas : FrameworkElement
             if (s[i - 1] < 0 && s[i] >= 0) { start = i; break; }
         }
 
-        const int points = 512;
+        const int points = 256; // plenty for a smooth line at screen size, half the work of 512
         int span = n / 2;
         double width = w * Math.Clamp(Look.Width, 0.1, 1);
         double left = center.X - width / 2;
@@ -425,12 +529,10 @@ public sealed class VisualizerCanvas : FrameworkElement
         Brush brush = !Rainbow
             ? Frozen(new LinearGradientBrush(_palette[0].Color, _palette[359].Color, new Point(0, 0), new Point(1, 0)))
             : _palette[ColorIndex(0, 0)];
-        var glow = Frozen(new Pen(brush, 10) { LineJoin = PenLineJoin.Round });
-        var line = Frozen(new Pen(brush, 2.5) { LineJoin = PenLineJoin.Round });
-
-        dc.PushOpacity(0.18);
+        // Bevel joins are far cheaper to tessellate than round ones and look the same at this density.
+        var glow = Frozen(new Pen(WithOpacity(brush, 0.18), 8) { LineJoin = PenLineJoin.Bevel });
+        var line = Frozen(new Pen(brush, 2.5) { LineJoin = PenLineJoin.Bevel });
         dc.DrawGeometry(null, glow, geo);
-        dc.Pop();
         dc.DrawGeometry(null, line, geo);
     }
 
@@ -492,18 +594,13 @@ public sealed class VisualizerCanvas : FrameworkElement
             {
                 int pr = Math.Min(rows - 1, (int)Math.Round(peaks[i] * rows));
                 if (pr >= lit)
-                {
-                    dc.PushOpacity(0.6);
-                    dc.DrawRectangle(brush, null, new Rect(x, baseline - (pr + 1) * cell, barW, blockH));
-                    dc.Pop();
-                }
+                    dc.DrawRectangle(Faded(ColorIndex((double)i / n, 200), 0.6), null, new Rect(x, baseline - (pr + 1) * cell, barW, blockH));
             }
             if (Look.Reflection && lit > 0)
             {
-                dc.PushOpacity(0.14);
+                var faded = Faded(ColorIndex((double)i / n, 200), 0.14);
                 for (int r = 0; r < Math.Min(lit, 6); r++)
-                    dc.DrawRectangle(brush, null, new Rect(x, baseline + 4 + r * cell, barW, blockH));
-                dc.Pop();
+                    dc.DrawRectangle(faded, null, new Rect(x, baseline + 4 + r * cell, barW, blockH));
             }
         }
     }
@@ -553,17 +650,13 @@ public sealed class VisualizerCanvas : FrameworkElement
         fill.Freeze();
 
         var gradient = SpectrumBrush();
-        dc.PushOpacity(0.28);
-        dc.DrawGeometry(gradient, null, fill);
-        dc.Pop();
-        dc.DrawGeometry(null, Frozen(new Pen(gradient, 3) { LineJoin = PenLineJoin.Round }), line);
+        dc.DrawGeometry(WithOpacity(gradient, 0.28), null, fill);
+        dc.DrawGeometry(null, Frozen(new Pen(gradient, 3) { LineJoin = PenLineJoin.Bevel }), line);
 
         if (Look.Reflection)
         {
             dc.PushTransform(new MatrixTransform(1, 0, 0, -0.3, 0, baseline * 1.3 + 4));
-            dc.PushOpacity(0.12);
-            dc.DrawGeometry(gradient, null, fill);
-            dc.Pop();
+            dc.DrawGeometry(WithOpacity(gradient, 0.12), null, fill);
             dc.Pop();
         }
     }
@@ -573,7 +666,7 @@ public sealed class VisualizerCanvas : FrameworkElement
     {
         var s = _analyzer.Samples;
         int n = s.Length;
-        const int points = 360;
+        const int points = 200;
         double size = Math.Min(w, h) * Look.Size;
         double r0 = size * 0.22 * (1 + _analyzer.Bass * _analyzer.Bass * 0.25);
         double amp = size * 0.18 * Look.Intensity;
@@ -596,13 +689,9 @@ public sealed class VisualizerCanvas : FrameworkElement
         geo.Freeze();
 
         var brush = SpectrumBrush();
-        dc.PushOpacity(0.12);
-        dc.DrawGeometry(brush, null, geo);
-        dc.Pop();
-        dc.PushOpacity(0.2);
-        dc.DrawGeometry(null, Frozen(new Pen(brush, 10) { LineJoin = PenLineJoin.Round }), geo);
-        dc.Pop();
-        dc.DrawGeometry(null, Frozen(new Pen(brush, 2.5) { LineJoin = PenLineJoin.Round }), geo);
+        dc.DrawGeometry(WithOpacity(brush, 0.12), null, geo);
+        dc.DrawGeometry(null, Frozen(new Pen(WithOpacity(brush, 0.2), 8) { LineJoin = PenLineJoin.Bevel }), geo);
+        dc.DrawGeometry(null, Frozen(new Pen(brush, 2.5) { LineJoin = PenLineJoin.Bevel }), geo);
     }
 
     /// <summary>A left-to-right gradient through the current colours, for line and area styles.</summary>

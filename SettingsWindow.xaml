@@ -71,7 +71,8 @@
 
                 <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Left">
                     <Button Content="Open visualizer window" Click="OnOpenVisualizer"/>
-                    <Button Content="Quit" Click="OnQuit"/>
+                    <Button Content="Stop" Click="OnQuit"
+                            ToolTip="Turn off the wallpaper and close this window. Music Visualizer stays in the tray; right-click the tray icon to exit completely."/>
                 </StackPanel>
 
                 <StackPanel Margin="0,20,0,0">
@@ -126,6 +127,8 @@
                         <TextBlock Text="LOOK" Style="{StaticResource Section}"/>
                         <!-- Style buttons are created in code, one per VisualMode. -->
                         <WrapPanel x:Name="ModeButtons"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                                   Text="Each style remembers its own settings below. Frame rate, the background picture and the song title card are shared by all styles."/>
                         <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                             <CheckBox x:Name="PeaksBox" Content="Peak caps" Margin="0,0,24,8" Checked="OnLookChanged" Unchecked="OnLookChanged"/>
                             <CheckBox x:Name="ReflectionBox" Content="Reflection" Checked="OnLookChanged" Unchecked="OnLookChanged"/>
@@ -140,6 +143,26 @@
                             <TextBlock Grid.Row="1" Text="Bar thickness" Style="{StaticResource Label}" Margin="0,8,0,0"/>
                             <Slider x:Name="BarWidthSlider" Grid.Row="1" Grid.Column="1" Minimum="0.15" Maximum="1" Margin="0,8,0,0" ValueChanged="OnSliderChanged"/>
                         </Grid>
+
+                        <TextBlock Text="CYCLE STYLES" Style="{StaticResource Section}"/>
+                        <CheckBox x:Name="CycleBox" Content="Switch between styles automatically" Checked="OnCycleChanged" Unchecked="OnCycleChanged"/>
+                        <StackPanel x:Name="CycleOptions" Margin="0,6,0,0">
+                            <TextBlock Text="Styles to use" Style="{StaticResource Label}" Margin="0,0,0,8"/>
+                            <!-- One check box per style, created in code. -->
+                            <WrapPanel x:Name="CycleModeBoxes" Margin="0,0,0,6"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <RadioButton x:Name="CycleByTime" GroupName="CycleBy" Content="After some time" Checked="OnCycleChanged"/>
+                                <RadioButton x:Name="CycleBySongs" GroupName="CycleBy" Content="After some songs" Checked="OnCycleChanged"/>
+                            </StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Change every" Style="{StaticResource Label}"/>
+                                <Slider x:Name="CycleSlider" Grid.Column="1" Minimum="0" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OnCycleSliderChanged"/>
+                                <TextBlock x:Name="CycleText" Grid.Column="2" Style="{StaticResource Label}" Opacity="0.7" TextAlignment="Right"/>
+                            </Grid>
+                            <CheckBox x:Name="CycleShuffleBox" Content="Random order" Margin="0,10,0,0" Checked="OnCycleChanged" Unchecked="OnCycleChanged"/>
+                            <TextBlock x:Name="CycleHint" Style="{StaticResource Hint}"/>
+                        </StackPanel>
 
                         <TextBlock Text="COLORS" Style="{StaticResource Section}"/>
                         <StackPanel Orientation="Horizontal">
@@ -198,6 +221,20 @@
                                 <TextBlock Text="Cover size" Style="{StaticResource Label}"/>
                                 <Slider x:Name="AlbumSizeSlider" Grid.Column="1" Minimum="0.12" Maximum="0.6" ValueChanged="OnSliderChanged"
                                         ToolTip="For the styles without a circle; Radial and Ring size it to fit the circle"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                                <TextBlock Text="Bounce" Style="{StaticResource Label}"/>
+                                <TextBlock Grid.Column="1" Text="Still" Style="{StaticResource Label}" Opacity="0.6" Margin="0,0,10,0"/>
+                                <Slider x:Name="AlbumBounceSlider" Grid.Column="2" Minimum="0" Maximum="3" ValueChanged="OnSliderChanged"
+                                        ToolTip="How much the cover grows on the beat"/>
+                                <TextBlock Grid.Column="3" Text="Big" Style="{StaticResource Label}" Opacity="0.6" Margin="10,0,0,0"/>
+                                <TextBlock Grid.Row="1" Text="Bounce sharpness" Style="{StaticResource Label}" Margin="0,8,0,0"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="Soft" Style="{StaticResource Label}" Opacity="0.6" Margin="0,8,10,0"/>
+                                <Slider x:Name="AlbumSharpnessSlider" Grid.Row="1" Grid.Column="2" Minimum="0" Maximum="1" Margin="0,8,0,0" ValueChanged="OnSliderChanged"
+                                        ToolTip="Soft: a smooth swell with the bass. Sharp: a quick kick on strong beats only."/>
+                                <TextBlock Grid.Row="1" Grid.Column="3" Text="Sharp" Style="{StaticResource Label}" Opacity="0.6" Margin="10,8,0,0"/>
                             </Grid>
                             <TextBlock Text="Song and artist" Style="{StaticResource Label}" Margin="0,0,0,8"/>
                             <!-- Caption position buttons are created in code (Below, Above, Left, Right, Hidden). -->
@@ -318,6 +355,20 @@
                         <CheckBox x:Name="StartupBox" Content="Start with Windows (in the system tray)" Checked="OnStartupClick" Unchecked="OnStartupClick"/>
                         <TextBlock Style="{StaticResource Hint}"
                                    Text="When it starts with Windows, the wallpaper comes back if it was on when you last used it."/>
+                        <TextBlock Text="PERFORMANCE" Style="{StaticResource Section}"/>
+                        <TextBlock Text="Frame rate" Style="{StaticResource Label}" Margin="0,0,0,8"/>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton GroupName="Fps" Content="15 fps" Tag="15" Checked="OnFpsChecked" x:Name="Fps15"/>
+                            <RadioButton GroupName="Fps" Content="24 fps" Tag="24" Checked="OnFpsChecked" x:Name="Fps24"/>
+                            <RadioButton GroupName="Fps" Content="30 fps" Tag="30" Checked="OnFpsChecked" x:Name="Fps30"/>
+                            <RadioButton GroupName="Fps" Content="60 fps" Tag="60" Checked="OnFpsChecked" x:Name="Fps60"/>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,14"
+                                   Text="Lower uses less CPU and battery. 30 looks smooth for a wallpaper; 60 is the smoothest and uses about twice the CPU."/>
+                        <CheckBox x:Name="CoveredBox" Content="Pause while a maximized or full-screen window covers the wallpaper" Checked="OnCoveredChanged" Unchecked="OnCoveredChanged"/>
+                        <TextBlock Style="{StaticResource Hint}"
+                                   Text="Nothing is drawn while you can't see it, so it uses almost no CPU while you work or game."/>
+
                         <TextBlock Text="ABOUT" Style="{StaticResource Section}"/>
                         <TextBlock Style="{StaticResource Hint}"
                                    Text="Settings are saved automatically. Start Music Visualizer from the Start menu to run the wallpaper, or Music Visualizer Settings to come here."/>

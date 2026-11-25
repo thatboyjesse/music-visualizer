@@ -44,6 +44,9 @@ public partial class SettingsWindow : Window
         (TitlePosition.Hidden, "Hidden"),
     };
 
+    /// <summary>Choices for "change every" when cycling by time, in seconds.</summary>
+    private static readonly int[] CycleTimes = { 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600 };
+
     private readonly AppController _app;
     private readonly DispatcherTimer _errorTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private Appearance _look;
@@ -87,6 +90,13 @@ public partial class SettingsWindow : Window
             };
             CaptionButtons.Children.Add(b);
         }
+        foreach (var (mode, _) in Modes)
+        {
+            var box = new CheckBox { Content = mode.ToString(), Tag = mode, Margin = new Thickness(0, 0, 18, 8) };
+            box.Checked += OnCycleChanged;
+            box.Unchecked += OnCycleChanged;
+            CycleModeBoxes.Children.Add(box);
+        }
         foreach (var (position, label) in Titles)
         {
             var b = new RadioButton { Content = label, GroupName = "Title", Tag = position, Margin = new Thickness(0, 0, 6, 6) };
@@ -103,8 +113,10 @@ public partial class SettingsWindow : Window
 
         _app.Changed += OnAppChanged;
         _app.AppearanceChanged += OnAppearanceChanged;
+        _app.LookSwitched += OnLookSwitched;
         Closed += (_, _) =>
         {
+            _app.LookSwitched -= OnLookSwitched;
             _app.Changed -= OnAppChanged;
             _app.AppearanceChanged -= OnAppearanceChanged;
             _errorTimer.Stop();
@@ -119,6 +131,13 @@ public partial class SettingsWindow : Window
     }
 
     private void OnAppChanged(object? sender, EventArgs e) => Sync();
+
+    /// <summary>Another style was picked (here, in the visualizer window, or by the cycle): show its own settings.</summary>
+    private void OnLookSwitched(object? sender, EventArgs e)
+    {
+        _look = _app.Settings.Look.Clone();
+        SyncLook();
+    }
 
     private void OnAppearanceChanged(object? sender, EventArgs e)
     {
@@ -170,6 +189,28 @@ public partial class SettingsWindow : Window
             bool bars = _app.Mode is not (VisualMode.Wave or VisualMode.Ring);
             PeaksBox.IsEnabled = ReflectionBox.IsEnabled = BarWidthSlider.IsEnabled = BarCountSlider.IsEnabled = bars;
 
+            var cs = _app.Settings;
+            CycleBox.IsChecked = cs.CycleEnabled;
+            CycleOptions.Visibility = cs.CycleEnabled ? Visibility.Visible : Visibility.Collapsed;
+            foreach (CheckBox b in CycleModeBoxes.Children) b.IsChecked = cs.CycleModes.Contains(b.Tag.ToString()!);
+            CycleByTime.IsChecked = cs.CycleBy == CycleBy.Time;
+            CycleBySongs.IsChecked = cs.CycleBy == CycleBy.Songs;
+            CycleShuffleBox.IsChecked = cs.CycleShuffle;
+            if (cs.CycleBy == CycleBy.Time)
+            {
+                CycleSlider.Maximum = CycleTimes.Length - 1;
+                int i = Array.FindIndex(CycleTimes, t => t >= cs.CycleSeconds);
+                CycleSlider.Value = i < 0 ? CycleTimes.Length - 1 : i;
+            }
+            else
+            {
+                CycleSlider.Maximum = 9;
+                CycleSlider.Value = Math.Clamp(cs.CycleSongs, 1, 10) - 1;
+            }
+            UpdateCycleText();
+            CycleHint.Text = cs.CycleModes.Count < 2 ? "Tick at least two styles to switch between." : "";
+            CycleHint.Visibility = cs.CycleModes.Count < 2 ? Visibility.Visible : Visibility.Collapsed;
+
             IdleBox.IsChecked = _app.Settings.HideWhenSilent;
             IdleSlider.Value = _app.Settings.SilentSeconds;
             IdleText.Text = $"{_app.Settings.SilentSeconds:0} s";
@@ -182,6 +223,7 @@ public partial class SettingsWindow : Window
             AppsPanel.Opacity = apps ? 1 : 0.5;
 
             StartupBox.IsChecked = StartWithWindows.IsEnabled;
+            CoveredBox.IsChecked = _app.Settings.PauseWhenCovered;
         }
         finally
         {
@@ -201,11 +243,15 @@ public partial class SettingsWindow : Window
             AlbumBox.IsChecked = _look.AlbumArt;
             AlbumOptions.Visibility = _look.AlbumArt ? Visibility.Visible : Visibility.Collapsed;
             AlbumSizeSlider.Value = _look.AlbumSize;
+            AlbumBounceSlider.Value = _look.AlbumBounce;
+            AlbumSharpnessSlider.Value = _look.AlbumSharpness;
             string caption = _look.AlbumCaption ? _look.CaptionPlace.ToString() : "Hidden";
             foreach (RadioButton b in CaptionButtons.Children) b.IsChecked = (string)b.Tag == caption;
             PeekBox.IsChecked = _look.PeekCard;
             PeekBox.IsEnabled = _look.Title == TitlePosition.Hidden;
             HideCardBox.IsChecked = _look.Title == TitlePosition.Hidden;
+            foreach (var b in new[] { Fps15, Fps24, Fps30, Fps60 })
+                b.IsChecked = int.Parse((string)b.Tag) == _look.FrameRate;
             BarCountSlider.Value = _look.BarCount;
             BarCountText.Text = _look.BarCount.ToString();
             WidthSlider.Value = _look.Width;
@@ -293,6 +339,8 @@ public partial class SettingsWindow : Window
         else if (sender == DimSlider) _look.BackgroundDim = e.NewValue;
         else if (sender == WidthSlider) _look.Width = e.NewValue;
         else if (sender == AlbumSizeSlider) _look.AlbumSize = e.NewValue;
+        else if (sender == AlbumBounceSlider) _look.AlbumBounce = e.NewValue;
+        else if (sender == AlbumSharpnessSlider) _look.AlbumSharpness = e.NewValue;
         else if (sender == EqBassSlider) _look.EqBass = e.NewValue;
         else if (sender == EqLowMidsSlider) _look.EqLowMids = e.NewValue;
         else if (sender == EqHighMidsSlider) _look.EqHighMids = e.NewValue;
@@ -330,6 +378,55 @@ public partial class SettingsWindow : Window
             }
         }
         Apply();
+    }
+
+    private void UpdateCycleText()
+    {
+        var s = _app.Settings;
+        if (s.CycleBy == CycleBy.Songs)
+            CycleText.Text = s.CycleSongs == 1 ? "song" : $"{s.CycleSongs} songs";
+        else
+            CycleText.Text = s.CycleSeconds < 60 ? $"{s.CycleSeconds} s"
+                : s.CycleSeconds < 3600 ? $"{s.CycleSeconds / 60} min" : "1 hour";
+    }
+
+    /// <summary>Any cycle control changed: read them all and hand them to the controller.</summary>
+    private void OnCycleChanged(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || _app is null) return;
+        var s = _app.Settings;
+        var modes = CycleModeBoxes.Children.OfType<CheckBox>().Where(b => b.IsChecked == true).Select(b => (VisualMode)b.Tag);
+        bool byChanged = (CycleBySongs.IsChecked == true) != (s.CycleBy == CycleBy.Songs);
+        _app.SetCycle(CycleBox.IsChecked == true, modes, CycleBySongs.IsChecked == true ? CycleBy.Songs : CycleBy.Time,
+            s.CycleSeconds, s.CycleSongs, CycleShuffleBox.IsChecked == true);
+        if (byChanged || sender == CycleBox || sender is CheckBox) Sync(); // slider range / hint / visibility
+    }
+
+    private void OnCycleSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_syncing || _app is null) return;
+        var s = _app.Settings;
+        int i = (int)Math.Round(e.NewValue);
+        int seconds = s.CycleBy == CycleBy.Time ? CycleTimes[Math.Clamp(i, 0, CycleTimes.Length - 1)] : s.CycleSeconds;
+        int songs = s.CycleBy == CycleBy.Songs ? i + 1 : s.CycleSongs;
+        _app.SetCycle(s.CycleEnabled, CycleList(), s.CycleBy, seconds, songs, s.CycleShuffle);
+        UpdateCycleText();
+    }
+
+    private IEnumerable<VisualMode> CycleList() =>
+        _app.Settings.CycleModes.Select(n => Enum.Parse<VisualMode>(n));
+
+    private void OnFpsChecked(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || _app is null) return;
+        _look.FrameRate = int.Parse((string)((RadioButton)sender).Tag);
+        Apply();
+    }
+
+    private void OnCoveredChanged(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || _app is null) return;
+        _app.SetPauseWhenCovered(CoveredBox.IsChecked == true);
     }
 
     private void OnResetEq(object sender, RoutedEventArgs e)
@@ -522,5 +619,5 @@ public partial class SettingsWindow : Window
 
     private void OnOpenVisualizer(object sender, RoutedEventArgs e) => _app.ShowVisualizer();
 
-    private void OnQuit(object sender, RoutedEventArgs e) => _app.Quit();
+    private void OnQuit(object sender, RoutedEventArgs e) => _app.Stop();
 }

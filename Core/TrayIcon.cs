@@ -16,7 +16,8 @@ public sealed class TrayIcon : IDisposable
     public event EventHandler? SettingsRequested;
     public event EventHandler? VisualizerRequested;
     public event EventHandler? WallpaperToggled;
-    public event EventHandler? QuitRequested;
+    public event EventHandler? StopRequested;
+    public event EventHandler? ExitRequested;
 
     public TrayIcon()
     {
@@ -26,7 +27,9 @@ public sealed class TrayIcon : IDisposable
         _wallpaperItem = new Forms.ToolStripMenuItem("Wallpaper", null, (_, _) => WallpaperToggled?.Invoke(this, EventArgs.Empty));
         menu.Items.Add(_wallpaperItem);
         menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Quit", null, (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty));
+        // "Stop" turns everything off but keeps the icon here; "Exit completely" closes the app.
+        menu.Items.Add("Stop", null, (_, _) => StopRequested?.Invoke(this, EventArgs.Empty));
+        menu.Items.Add("Exit completely", null, (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty));
         foreach (Forms.ToolStripItem item in menu.Items) item.ForeColor = Color.FromArgb(0xE8, 0xE8, 0xF0);
 
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/app.ico")).Stream;
