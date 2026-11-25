@@ -29,6 +29,7 @@ public static class Uninstaller
         Registry.CurrentUser.DeleteSubKeyTree(InstallInfo.UninstallKey, throwOnMissingSubKey: false);
 
         TryDelete(() => File.Delete(InstallInfo.StartMenuShortcut));
+        TryDelete(() => File.Delete(InstallInfo.SettingsShortcut));
         TryDelete(() => File.Delete(InstallInfo.DesktopShortcut));
         // Retried: antivirus or the search indexer can hold a file open for a moment.
         for (int i = 0; i < 10 && Directory.Exists(InstallInfo.DataDir); i++)

@@ -209,6 +209,23 @@ public sealed class AudioEngine : IDisposable
         RaiseStateChanged();
     }
 
+    /// <summary>
+    /// Seconds since any source last delivered audible sound (not just silence). Very large when
+    /// nothing is being captured. Used to fall back to the normal wallpaper when nothing plays.
+    /// </summary>
+    public double SecondsSinceSound
+    {
+        get
+        {
+            double best = _main.SecondsSinceSound;
+            lock (_lock)
+            {
+                foreach (var (_, ring) in _apps.Values) best = Math.Min(best, ring.SecondsSinceSound);
+            }
+            return best;
+        }
+    }
+
     /// <summary>Copies the latest <see cref="FftSize"/> samples, oldest first, summing all sources.
     /// A source that hasn't delivered audio recently (paused, silent app) contributes silence.</summary>
     public void GetSamples(float[] dest)
@@ -255,20 +272,37 @@ public sealed class AudioEngine : IDisposable
         private readonly float[] _ring = new float[FftSize];
         private int _pos;
         private long _lastWrite;
+        private long _lastSound;
+
+        /// <summary>Peak level below which a block counts as silence (about −66 dBFS).</summary>
+        private const float Audible = 0.0005f;
+
+        public double SecondsSinceSound
+        {
+            get
+            {
+                lock (_ring)
+                    return _lastSound == 0 ? double.MaxValue : (Stopwatch.GetTimestamp() - _lastSound) / (double)Stopwatch.Frequency;
+            }
+        }
 
         public void Add(float[] buffer, int offset, int count, int channels)
         {
             lock (_ring)
             {
                 int end = offset + count;
+                float peak = 0;
                 for (int i = offset; i + channels <= end; i += channels)
                 {
                     float sum = 0;
                     for (int c = 0; c < channels; c++) sum += buffer[i + c];
-                    _ring[_pos] = sum / channels;
+                    float v = sum / channels;
+                    _ring[_pos] = v;
                     _pos = (_pos + 1) % FftSize;
+                    if (Math.Abs(v) > peak) peak = Math.Abs(v);
                 }
                 _lastWrite = Stopwatch.GetTimestamp();
+                if (peak > Audible) _lastSound = _lastWrite;
             }
         }
 
@@ -290,6 +324,7 @@ public sealed class AudioEngine : IDisposable
                 Array.Clear(_ring);
                 _pos = 0;
                 _lastWrite = 0;
+                _lastSound = 0;
             }
         }
     }

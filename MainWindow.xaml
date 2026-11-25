@@ -21,7 +21,7 @@
                 <Button Content="Visualize live audio" Click="OnIntroLoopbackClick" Padding="18,9"/>
             </StackPanel>
             <TextBlock Opacity="0.45" FontSize="12" Margin="0,24,0,0" HorizontalAlignment="Center"
-                       Text="Space  play/pause    1–3  modes    F  fullscreen    W  wallpaper    S  screen    H  hide controls"/>
+                       Text="Space  play/pause    1–7  styles    F  fullscreen    W  wallpaper    S  screen    H  hide controls"/>
         </StackPanel>
 
         <StackPanel x:Name="WallpaperNotice" HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -44,9 +44,8 @@
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
-                    <RadioButton x:Name="ModeBars" GroupName="Mode" Content="Bars" IsChecked="True" Checked="OnModeChecked"/>
-                    <RadioButton x:Name="ModeRadial" GroupName="Mode" Content="Radial" Checked="OnModeChecked"/>
-                    <RadioButton x:Name="ModeWave" GroupName="Mode" Content="Wave" Checked="OnModeChecked" Margin="0,0,14,0"/>
+                    <Button x:Name="ModeBtn" Click="OnModeClick" MinWidth="120" Margin="0,0,14,0"
+                            ToolTip="Next visual style (keys 1–7 pick one directly)"/>
                     <Button x:Name="ScreenBtn" Content="Screen 1" Click="OnScreenClick" Visibility="Collapsed"/>
                     <ToggleButton x:Name="WallpaperBtn" Content="Wallpaper" Click="OnWallpaperClick"
                                   ToolTip="Run the visualizer behind your desktop icons (W)"/>

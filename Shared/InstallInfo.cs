@@ -26,9 +26,11 @@ namespace MusicVisualizer.Shared
         public const string InstanceMutex = @"Local\MusicVisualizer.Instance";
         public const string ShowEvent = @"Local\MusicVisualizer.Show";
         public const string QuitEvent = @"Local\MusicVisualizer.Quit";
+        public const string WallpaperEvent = @"Local\MusicVisualizer.Wallpaper";
 
         // Command-line switches.
         public const string BackgroundArg = "--background";
+        public const string SettingsArg = "--settings";
         public const string UninstallArg = "--uninstall";
         public const string QuietArg = "--quiet";
 
@@ -37,6 +39,10 @@ namespace MusicVisualizer.Shared
 
         public static string StartMenuShortcut =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), AppName + ".lnk");
+
+        /// <summary>Second Start-menu entry that opens settings ("Music Visualizer" itself starts the wallpaper).</summary>
+        public static string SettingsShortcut =>
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), AppName + " Settings.lnk");
 
         public static string DesktopShortcut =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), AppName + ".lnk");

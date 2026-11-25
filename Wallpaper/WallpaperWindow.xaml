@@ -10,7 +10,12 @@
     <Grid>
         <viz:VisualizerCanvas x:Name="Viz"/>
         <!-- Bottom-right keeps it clear of desktop icons, which start top-left. -->
+        <!-- Position comes from the "Song title" setting (NowPlayingCard.Place). -->
         <controls:NowPlayingCard x:Name="Card" HorizontalAlignment="Right" VerticalAlignment="Bottom"
                                  Margin="0,0,56,88"/>
+        <!-- A copy of the normal desktop background, faded in before the window hides while nothing plays. -->
+        <Grid x:Name="Desk" Opacity="0" IsHitTestVisible="False">
+            <Image x:Name="DeskImage"/>
+        </Grid>
     </Grid>
 </Window>

@@ -12,6 +12,7 @@ public partial class NowPlayingCard : UserControl
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private NowPlayingService? _service;
     private ImageSource? _shownArt;
+    private bool _hidden;
 
     public NowPlayingCard()
     {
@@ -30,6 +31,22 @@ public partial class NowPlayingCard : UserControl
     public double Scale
     {
         set => LayoutTransform = new ScaleTransform(value, value);
+    }
+
+    /// <summary>
+    /// Places the card in a corner or edge of its parent (the wallpaper uses this for the
+    /// "Song title" setting). Bottom positions leave room for the taskbar.
+    /// </summary>
+    public void Place(Settings.TitlePosition position)
+    {
+        _hidden = position == Settings.TitlePosition.Hidden;
+        string p = position.ToString();
+        VerticalAlignment = p.StartsWith("Top") ? VerticalAlignment.Top : VerticalAlignment.Bottom;
+        HorizontalAlignment = p.EndsWith("Left") ? HorizontalAlignment.Left
+                            : p.EndsWith("Center") ? HorizontalAlignment.Center
+                            : HorizontalAlignment.Right;
+        Margin = VerticalAlignment == VerticalAlignment.Top ? new Thickness(56, 56, 56, 0) : new Thickness(56, 0, 56, 88);
+        Refresh();
     }
 
     public void Bind(NowPlayingService service)
@@ -53,7 +70,7 @@ public partial class NowPlayingCard : UserControl
     private void Refresh()
     {
         var t = _service?.Current;
-        Visibility = t is null ? Visibility.Collapsed : Visibility.Visible;
+        Visibility = t is null || _hidden ? Visibility.Collapsed : Visibility.Visible;
         if (t is null) return;
 
         TitleText.Text = t.Title;

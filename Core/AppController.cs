@@ -1,3 +1,5 @@
+using System.IO;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -10,6 +12,17 @@ using MusicVisualizer.Wallpaper;
 
 namespace MusicVisualizer.Core;
 
+/// <summary>How the app was started.</summary>
+public enum LaunchMode
+{
+    /// <summary>Normal launch (Start menu, desktop shortcut): run as the wallpaper, no window.</summary>
+    Wallpaper,
+    /// <summary>"Music Visualizer Settings" shortcut: open settings.</summary>
+    Settings,
+    /// <summary>Start with Windows: restore the saved state quietly.</summary>
+    Background,
+}
+
 /// <summary>
 /// Owns everything that lives as long as the app: settings, audio, now-playing, the wallpaper,
 /// the tray icon and the (optional) windows. The app keeps running with no window open;
@@ -19,11 +32,14 @@ public sealed class AppController : IDisposable
 {
     private readonly TrayIcon _tray = new();
     private readonly DispatcherTimer _reattachTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
+    private readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly HwndSource _shellWatcher;
     private readonly int _taskbarCreatedMsg = RegisterWindowMessage("TaskbarCreated");
     private int _reattachAttempts;
 
     private WallpaperWindow? _wallpaper;
+    private DateTime _attachedAt;
     private bool _closingWallpaper;
     private MainWindow? _visualizer;
     private SettingsWindow? _settingsWindow;
@@ -36,6 +52,9 @@ public sealed class AppController : IDisposable
     /// <summary>Raised on the UI thread whenever something the windows show may have changed.</summary>
     public event EventHandler? Changed;
 
+    /// <summary>Raised when <see cref="AppSettings.Look"/> changes (often, while a slider is dragged).</summary>
+    public event EventHandler? AppearanceChanged;
+
     public AppController()
     {
         _tray.SettingsRequested += (_, _) => ShowSettings();
@@ -47,6 +66,9 @@ public sealed class AppController : IDisposable
         Engine.StateChanged += (_, _) => Dispatcher.BeginInvoke(() => { ApplyTheme(); RaiseChanged(); });
 
         _reattachTimer.Tick += (_, _) => RetryWallpaper();
+        _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Settings.Save(); };
+        _idleTimer.Tick += (_, _) => CheckIdle();
+        _idleTimer.Start();
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         // A hidden top-level window, only so we receive the "TaskbarCreated" broadcast
@@ -66,18 +88,37 @@ public sealed class AppController : IDisposable
     public bool WallpaperRunning => _wallpaper is not null;
     public ScreenInfo WallpaperScreen => Screens.Find(Settings.WallpaperScreen);
 
-    /// <summary>Album-art colour, used only while visualizing live audio (a local file has nothing to do with it).</summary>
-    public double? ThemeHue => Engine.Source is AudioSource.Loopback or AudioSource.Apps ? NowPlaying.ThemeHue : null;
+    /// <summary>Colours of the latest album cover (used by the "Song art colors" setting).</summary>
+    public AlbumColors? AlbumColors => NowPlaying.AlbumColors;
 
-    public void Start(bool showSettings, bool forceWallpaper)
+    public void Start(LaunchMode launch)
     {
         StartWithWindows.Repair();
         NowPlaying.Start();
-        if (forceWallpaper) Settings.WallpaperEnabled = true;
+        if (launch == LaunchMode.Wallpaper) Settings.WallpaperEnabled = true;
         if (Settings.WallpaperEnabled && !TryAttachWallpaper(out _))
             StartReattachRetries(); // Explorer may not be ready yet right after sign-in
-        if (showSettings || !Settings.SetupDone) ShowSettings();
+        if (launch == LaunchMode.Settings) ShowSettings();
+        else if (launch == LaunchMode.Wallpaper) ShowTrayHintOnce();
         UpdateTray();
+    }
+
+    /// <summary>
+    /// The main action: run as the wallpaper with no window in the way. Used by the big button in
+    /// settings and by launching the app again while it runs (if the wallpaper is already on,
+    /// that opens settings instead, so the click always does something visible).
+    /// </summary>
+    public void RunAsWallpaper(bool openSettingsIfRunning = false)
+    {
+        if (WallpaperRunning)
+        {
+            if (openSettingsIfRunning) ShowSettings();
+            return;
+        }
+        SetWallpaper(true, showErrors: true);
+        if (!WallpaperRunning) return;
+        _settingsWindow?.Close();
+        ShowTrayHintOnce();
     }
 
     // ------------------------------------------------------------ windows
@@ -92,9 +133,11 @@ public sealed class AppController : IDisposable
                 _settingsWindow = null;
                 Settings.SetupDone = true;
                 Settings.Save();
+                UpdateAudio();
                 ShowTrayHintOnce();
             };
             _settingsWindow.Show();
+            UpdateAudio();
         }
         if (_settingsWindow.WindowState == WindowState.Minimized) _settingsWindow.WindowState = WindowState.Normal;
         _settingsWindow.Activate();
@@ -123,8 +166,8 @@ public sealed class AppController : IDisposable
         if (Settings.TrayHintShown || _disposed) return;
         Settings.TrayHintShown = true;
         Settings.Save();
-        _tray.ShowBalloon("Music Visualizer is still running",
-            "It lives in the system tray. Click the icon for settings, or right-click to quit.");
+        _tray.ShowBalloon(WallpaperRunning ? "Music Visualizer is your wallpaper now" : "Music Visualizer is still running",
+            "It lives in the system tray. Click the icon to change how it looks, or right-click to quit.");
     }
 
     // ------------------------------------------------------------ settings
@@ -136,6 +179,78 @@ public sealed class AppController : IDisposable
         if (_wallpaper is not null) _wallpaper.Mode = mode;
         RaiseChanged();
     }
+
+    public void SetAppearance(Appearance look)
+    {
+        Settings.Look = look.Clone();
+        SaveSoon();
+        if (_wallpaper is not null) _wallpaper.Look = Settings.Look;
+        AppearanceChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Copies a picture into %AppData%\MusicVisualizer (so it survives the original being moved)
+    /// and uses it as the background. Each copy gets a new name so every view reloads it.
+    /// </summary>
+    public void SetBackgroundImage(string? sourcePath)
+    {
+        var look = Settings.Look.Clone();
+        string? copy = null;
+        if (sourcePath is not null)
+        {
+            Directory.CreateDirectory(InstallInfoDataDir);
+            copy = Path.Combine(InstallInfoDataDir, $"background-{DateTime.Now.Ticks}{Path.GetExtension(sourcePath)}");
+            File.Copy(sourcePath, copy, overwrite: true);
+        }
+        foreach (var old in Directory.Exists(InstallInfoDataDir)
+                     ? Directory.GetFiles(InstallInfoDataDir, "background-*") : Array.Empty<string>())
+        {
+            if (old != copy) try { File.Delete(old); } catch (IOException) { }
+        }
+        look.BackgroundImage = copy;
+        SetAppearance(look);
+        Settings.Save();
+    }
+
+    /// <summary>The current Windows desktop wallpaper file, if it is a picture.</summary>
+    public static string? CurrentDesktopWallpaper()
+    {
+        var path = new StringBuilder(520);
+        return SystemParametersInfo(0x0073 /* SPI_GETDESKWALLPAPER */, (uint)path.Capacity, path, 0)
+               && File.Exists(path.ToString()) ? path.ToString() : null;
+    }
+
+    private static string InstallInfoDataDir => Shared.InstallInfo.DataDir;
+
+    private void SaveSoon()
+    {
+        _saveTimer.Stop();
+        _saveTimer.Start();
+    }
+
+    public void SetHideWhenSilent(bool hide, double seconds)
+    {
+        Settings.HideWhenSilent = hide;
+        Settings.SilentSeconds = Math.Clamp(seconds, 1, 120);
+        SaveSoon();
+    }
+
+    /// <summary>
+    /// While nothing the app listens to makes a sound for <see cref="AppSettings.SilentSeconds"/>,
+    /// show the normal desktop wallpaper; bring the visualizer back as soon as sound returns.
+    /// </summary>
+    private void CheckIdle()
+    {
+        if (_wallpaper is null) return;
+        // Give capture a moment after the wallpaper appears, so it doesn't fade out before the first sound arrives.
+        double quiet = Math.Min(Engine.SecondsSinceSound, (DateTime.UtcNow - _attachedAt).TotalSeconds);
+        if (!Settings.HideWhenSilent) _wallpaper.SetIdle(false);
+        else if (!_wallpaper.IsIdle && quiet >= Settings.SilentSeconds) _wallpaper.SetIdle(true);
+        else if (_wallpaper.IsIdle && quiet < 0.3) _wallpaper.SetIdle(false);
+    }
+
+    /// <summary>True while the wallpaper is switched off because nothing is playing.</summary>
+    public bool WallpaperIdle => _wallpaper?.IsIdle == true;
 
     public void SetListen(ListenMode mode, IEnumerable<string> apps)
     {
@@ -168,8 +283,9 @@ public sealed class AppController : IDisposable
 
     // ------------------------------------------------------------ audio
 
-    /// <summary>Live audio runs only while something shows it: the wallpaper or the visualizer window.</summary>
-    private bool NeedsLiveAudio => _wallpaper is not null || (_visualizer is not null && Settings.AutoSystemAudio);
+    /// <summary>Live audio runs only while something shows it: the wallpaper, the visualizer window, or the settings preview.</summary>
+    private bool NeedsLiveAudio =>
+        _wallpaper is not null || _settingsWindow is not null || (_visualizer is not null && Settings.AutoSystemAudio);
 
     /// <summary>Starts or stops live capture to match what's on screen. Leaves file playback alone.</summary>
     public void UpdateAudio()
@@ -204,7 +320,7 @@ public sealed class AppController : IDisposable
 
     private void ApplyTheme()
     {
-        if (_wallpaper is not null) _wallpaper.ThemeHue = ThemeHue;
+        if (_wallpaper is not null) _wallpaper.AlbumColors = AlbumColors;
         _visualizer?.ApplyTheme();
     }
 
@@ -239,7 +355,7 @@ public sealed class AppController : IDisposable
     private bool TryAttachWallpaper(out string? error)
     {
         error = null;
-        var window = new WallpaperWindow(Engine, NowPlaying, Mode);
+        var window = new WallpaperWindow(Engine, NowPlaying, Mode, Settings.Look);
         try
         {
             window.ShowAsWallpaper(WallpaperScreen.Bounds);
@@ -252,8 +368,9 @@ public sealed class AppController : IDisposable
         }
 
         _wallpaper = window;
+        _attachedAt = DateTime.UtcNow;
         window.Closed += OnWallpaperClosed;
-        window.ThemeHue = ThemeHue;
+        window.AlbumColors = AlbumColors;
         UpdateAudio();
         UpdateTray();
         RaiseChanged();
@@ -342,6 +459,8 @@ public sealed class AppController : IDisposable
         _disposed = true;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _reattachTimer.Stop();
+        _saveTimer.Stop();
+        _idleTimer.Stop();
         _visualizer?.Close();
         _settingsWindow?.Close();
         if (_wallpaper is not null)
@@ -358,4 +477,7 @@ public sealed class AppController : IDisposable
 
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern int RegisterWindowMessage(string message);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, EntryPoint = "SystemParametersInfoW")]
+    private static extern bool SystemParametersInfo(uint action, uint param, StringBuilder pvParam, uint winIni);
 }

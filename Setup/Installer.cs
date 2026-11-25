@@ -78,8 +78,10 @@ namespace MusicVisualizer.Setup
             CopyPayload(exe, p => progress(0.1 + p * 0.75, "Copying files…"));
 
             progress(0.88, "Creating shortcuts…");
-            CreateShortcut(InstallInfo.StartMenuShortcut, exe);
-            if (options.DesktopShortcut) CreateShortcut(InstallInfo.DesktopShortcut, exe);
+            // "Music Visualizer" runs the wallpaper (the main way to use it); "... Settings" opens settings.
+            CreateShortcut(InstallInfo.StartMenuShortcut, exe, "", "Run the music visualizer as your desktop wallpaper");
+            CreateShortcut(InstallInfo.SettingsShortcut, exe, InstallInfo.SettingsArg, "Change how Music Visualizer looks and what it listens to");
+            if (options.DesktopShortcut) CreateShortcut(InstallInfo.DesktopShortcut, exe, "", "Run the music visualizer as your desktop wallpaper");
             else TryDelete(InstallInfo.DesktopShortcut);
 
             progress(0.94, "Registering…");
@@ -105,6 +107,52 @@ namespace MusicVisualizer.Setup
             }
 
             progress(1, "Done");
+        }
+
+        /// <summary>
+        /// Removes Music Visualizer: the app, shortcuts, startup and Apps entries, and settings.
+        /// Done by Setup itself (not by running the app's --uninstall) so it also cleans up a
+        /// broken install whose exe is missing. The 1.0.0 Inno Setup install runs its own uninstaller.
+        /// </summary>
+        public static void Uninstall(ExistingInstall existing, Action<double, string> progress)
+        {
+            string dir = Path.GetFullPath(existing.Dir);
+
+            progress(0.1, "Closing Music Visualizer…");
+            StopRunningApp(dir);
+
+            if (existing.IsLegacyInno)
+            {
+                progress(0.4, "Removing…");
+                RemoveLegacyInno();
+                progress(1, "Done");
+                return;
+            }
+
+            progress(0.4, "Removing shortcuts and settings…");
+            using (var run = Registry.CurrentUser.OpenSubKey(InstallInfo.RunKey, true))
+                run?.DeleteValue(InstallInfo.RunValue, false);
+            Registry.CurrentUser.DeleteSubKeyTree(InstallInfo.UninstallKey, false);
+            TryDelete(InstallInfo.StartMenuShortcut);
+            TryDelete(InstallInfo.SettingsShortcut);
+            TryDelete(InstallInfo.DesktopShortcut);
+            DeleteFolder(InstallInfo.DataDir);
+
+            progress(0.7, "Removing files…");
+            // Only a folder that really holds the app, never whatever path the registry happens to name.
+            if (File.Exists(Path.Combine(dir, InstallInfo.ExeName))) DeleteFolder(dir);
+            progress(1, "Done");
+        }
+
+        /// <summary>Deletes a folder, retrying briefly while files are still locked (an app that just exited, antivirus).</summary>
+        private static void DeleteFolder(string dir)
+        {
+            for (int i = 0; i < 20 && Directory.Exists(dir); i++)
+            {
+                try { Directory.Delete(dir, true); }
+                catch (IOException) { Thread.Sleep(250); }
+                catch (UnauthorizedAccessException) { Thread.Sleep(250); }
+            }
         }
 
         /// <summary>Asks a running copy to quit (so it restores the desktop), then force-closes stragglers.</summary>
@@ -190,7 +238,7 @@ namespace MusicVisualizer.Setup
             }
         }
 
-        private static void CreateShortcut(string path, string target)
+        private static void CreateShortcut(string path, string target, string arguments, string description)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
@@ -198,9 +246,10 @@ namespace MusicVisualizer.Setup
             {
                 dynamic link = shell.CreateShortcut(path);
                 link.TargetPath = target;
+                link.Arguments = arguments;
                 link.WorkingDirectory = Path.GetDirectoryName(target);
                 link.IconLocation = target + ",0";
-                link.Description = "Music visualizer and live wallpaper";
+                link.Description = description;
                 link.Save();
             }
             finally
@@ -216,7 +265,7 @@ namespace MusicVisualizer.Setup
             catch (UnauthorizedAccessException) { }
         }
 
-        /// <summary>Starts the installed app. With no arguments it opens settings (the welcome screen on first run).</summary>
+        /// <summary>Starts the installed app. With no arguments it runs as the wallpaper, with no window.</summary>
         public static void Launch(string dir)
         {
             Process.Start(new ProcessStartInfo(Path.Combine(dir, InstallInfo.ExeName)) { UseShellExecute = true, WorkingDirectory = dir });

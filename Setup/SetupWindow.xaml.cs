@@ -17,6 +17,7 @@ namespace MusicVisualizer.Setup
     {
         private bool _installing;
         private bool _succeeded;
+        private readonly ExistingInstall _existing;
 
         public SetupWindow()
         {
@@ -27,7 +28,7 @@ namespace MusicVisualizer.Setup
             var icon = BitmapDecoder.Create(new Uri("pack://application:,,,/app.ico"), BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
             Logo.Source = icon.Frames.OrderByDescending(f => f.PixelWidth).First();
 
-            var existing = Installer.FindExisting();
+            var existing = _existing = Installer.FindExisting();
             DirBox.Text = existing?.Dir ?? InstallInfo.DefaultInstallDir;
             if (existing != null)
             {
@@ -39,6 +40,8 @@ namespace MusicVisualizer.Setup
                 if (existing.IsLegacyInno)
                     SubHeading.Text = $"Version {existing.Version ?? "?"} is installed. This replaces it with version {Installer.Version}.";
                 InstallBtn.Content = same ? "Reinstall" : "Update";
+                UninstallBtn.Visibility = Visibility.Visible;
+                FooterHint.Visibility = Visibility.Collapsed;
                 if (!existing.IsLegacyInno)
                 {
                     // Keep the app where it is, so shortcuts and the startup entry stay valid.
@@ -137,8 +140,9 @@ namespace MusicVisualizer.Setup
             }
             catch (Exception ex)
             {
+                LaunchBox.IsChecked = false;
                 DoneBadge.Background = new SolidColorBrush(Color.FromRgb(0xC6, 0x3B, 0x3B));
-                DoneGlyph.Text = "";
+                DoneGlyph.Text = ""; // Segoe MDL2 "Cancel" (an X)
                 DoneTitle.Text = "Setup couldn't finish";
                 DoneText.Text = ex.Message;
                 FinishBtn.Content = "Close";
@@ -150,9 +154,48 @@ namespace MusicVisualizer.Setup
             DonePage.Visibility = Visibility.Visible;
         }
 
+        private async void OnUninstallClick(object sender, RoutedEventArgs e)
+        {
+            if (MessageBox.Show(this, "Remove Music Visualizer from this PC?\n\nThis removes the app, its shortcuts, the startup entry and your settings. Your normal wallpaper comes back.",
+                    Title, MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+                return;
+
+            _installing = true;
+            CloseBtn.IsEnabled = false;
+            LaunchBox.IsChecked = false;
+            ProgressTitle.Text = "Removing…";
+            OptionsPage.Visibility = Visibility.Collapsed;
+            ProgressPage.Visibility = Visibility.Visible;
+
+            try
+            {
+                await Task.Run(() => Installer.Uninstall(_existing, (p, status) =>
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        Progress.Value = p;
+                        StatusText.Text = status;
+                    }))));
+                DoneTitle.Text = "Music Visualizer was removed";
+                DoneText.Text = "Your normal wallpaper is back. You can install it again any time with this setup.";
+            }
+            catch (Exception ex)
+            {
+                DoneBadge.Background = new SolidColorBrush(Color.FromRgb(0xC6, 0x3B, 0x3B));
+                DoneGlyph.Text = ""; // Segoe MDL2 "Cancel" (an X)
+                DoneTitle.Text = "Couldn't remove everything";
+                DoneText.Text = ex.Message;
+            }
+
+            FinishBtn.Content = "Close";
+            _installing = false;
+            CloseBtn.IsEnabled = true;
+            ProgressPage.Visibility = Visibility.Collapsed;
+            DonePage.Visibility = Visibility.Visible;
+        }
+
         private void OnFinishClick(object sender, RoutedEventArgs e)
         {
-            if (_succeeded && LaunchBox.IsChecked == true)
+            if (_succeeded && LaunchBox.IsChecked == true) // no arguments = run as the wallpaper
             {
                 try { Installer.Launch(System.IO.Path.GetFullPath(DirBox.Text.Trim())); }
                 catch (Exception ex) { MessageBox.Show(this, "Couldn't start Music Visualizer:\n\n" + ex.Message, Title); }

@@ -61,22 +61,24 @@
                     </DockPanel>
                     <CheckBox x:Name="StartupBox" IsChecked="True" Content="Start with Windows (runs quietly in the system tray)"/>
                     <CheckBox x:Name="DesktopBox" Content="Add a desktop shortcut"/>
-                    <CheckBox x:Name="LaunchBox" IsChecked="True" Content="Open Music Visualizer when setup finishes"/>
+                    <CheckBox x:Name="LaunchBox" IsChecked="True" Content="Start the wallpaper when setup finishes"/>
                 </StackPanel>
 
                 <DockPanel Grid.Row="2">
+                    <Button x:Name="UninstallBtn" DockPanel.Dock="Left" Content="Uninstall" Margin="0" Visibility="Collapsed"
+                            Click="OnUninstallClick" ToolTip="Remove Music Visualizer and its settings from this PC"/>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <Button Content="Cancel" Click="OnCloseClick"/>
                         <Button x:Name="InstallBtn" Content="Install" Style="{StaticResource Primary}" MinWidth="96" Click="OnInstallClick"/>
                     </StackPanel>
-                    <TextBlock Text="For your Windows user only. No admin rights needed." Style="{StaticResource Hint}"
+                    <TextBlock x:Name="FooterHint" Text="For your Windows user only. No admin rights needed." Style="{StaticResource Hint}"
                                VerticalAlignment="Center" FontSize="11"/>
                 </DockPanel>
             </Grid>
 
             <!-- Page 2: progress -->
             <StackPanel x:Name="ProgressPage" Grid.Column="1" Margin="32,0,28,0" VerticalAlignment="Center" Visibility="Collapsed">
-                <TextBlock Text="Installing…" FontSize="22" FontWeight="SemiBold"/>
+                <TextBlock x:Name="ProgressTitle" Text="Installing…" FontSize="22" FontWeight="SemiBold"/>
                 <ProgressBar x:Name="Progress" Maximum="1" Margin="0,22,0,10"/>
                 <TextBlock x:Name="StatusText" Style="{StaticResource Hint}"/>
             </StackPanel>
@@ -94,7 +96,7 @@
                     </Border>
                     <TextBlock x:Name="DoneTitle" Text="Music Visualizer is installed" FontSize="22" FontWeight="SemiBold" Margin="0,18,0,0"/>
                     <TextBlock x:Name="DoneText" Style="{StaticResource Hint}" FontSize="13" Margin="0,8,0,0"
-                               Text="It runs in your system tray, at the bottom-right of the taskbar (it may be under the ^ arrow). Click the icon any time for settings, or right-click it to quit."/>
+                               Text="Click Finish to start it as your wallpaper. It runs from the system tray at the bottom-right of the taskbar (maybe under the ^ arrow): click the icon to change how it looks, or right-click it to quit. You can also open Music Visualizer Settings from the Start menu."/>
                 </StackPanel>
                 <Button x:Name="FinishBtn" Grid.Row="1" HorizontalAlignment="Right" Content="Finish" MinWidth="96"
                         Style="{StaticResource Primary}" Click="OnFinishClick"/>

@@ -15,6 +15,9 @@ public sealed class AppSettings
 
     public string Mode { get; set; } = "Bars";
 
+    /// <summary>Colours, position, size, intensity, glow and background picture.</summary>
+    public Appearance Look { get; set; } = new();
+
     /// <summary>Run the live wallpaper whenever the app is running.</summary>
     public bool WallpaperEnabled { get; set; }
 
@@ -26,6 +29,12 @@ public sealed class AppSettings
 
     /// <summary>Process names (without ".exe") to listen to when <see cref="Listen"/> is SelectedApps.</summary>
     public List<string> Apps { get; set; } = new();
+
+    /// <summary>Show the normal desktop wallpaper while nothing is playing (the visualizer comes back with the music).</summary>
+    public bool HideWhenSilent { get; set; } = true;
+
+    /// <summary>How long it must be quiet before switching to the normal wallpaper, in seconds.</summary>
+    public double SilentSeconds { get; set; } = 5;
 
     /// <summary>Start capturing automatically when the visualizer window opens or a track starts playing.</summary>
     public bool AutoSystemAudio { get; set; } = true;

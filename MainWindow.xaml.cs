@@ -22,7 +22,6 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private bool _updatingSeek;
     private bool _userSeeking;
-    private bool _syncingMode;
 
     private bool _fullscreen;
     private WindowState _prevState;
@@ -42,6 +41,8 @@ public partial class MainWindow : Window
         Card.Bind(_app.NowPlaying);
 
         _app.Changed += OnAppChanged;
+        _app.AppearanceChanged += OnAppearanceChanged;
+        Viz.Look = _app.Settings.Look;
         _timer.Tick += (_, _) => RefreshTransport();
         _timer.Start();
 
@@ -51,14 +52,7 @@ public partial class MainWindow : Window
 
     private void OnAppChanged(object? sender, EventArgs e)
     {
-        _syncingMode = true;
-        switch (_app.Mode)
-        {
-            case VisualMode.Radial: ModeRadial.IsChecked = true; break;
-            case VisualMode.Wave: ModeWave.IsChecked = true; break;
-            default: ModeBars.IsChecked = true; break;
-        }
-        _syncingMode = false;
+        ModeBtn.Content = $"Style: {_app.Mode}";
         Viz.Mode = _app.Mode;
 
         bool wallpaper = _app.WallpaperRunning;
@@ -76,7 +70,9 @@ public partial class MainWindow : Window
         RefreshTransport();
     }
 
-    public void ApplyTheme() => Viz.ThemeHue = _app.ThemeHue;
+    public void ApplyTheme() => Viz.AlbumColors = _app.AlbumColors;
+
+    private void OnAppearanceChanged(object? sender, EventArgs e) => Viz.Look = _app.Settings.Look;
 
     // ------------------------------------------------------------ transport
 
@@ -171,13 +167,10 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------ modes, wallpaper, settings
 
-    private void OnModeChecked(object sender, RoutedEventArgs e)
+    private void OnModeClick(object sender, RoutedEventArgs e)
     {
-        if (Viz is null || _syncingMode) return; // fires during InitializeComponent / while syncing
-        var mode = sender == ModeRadial ? VisualMode.Radial
-                 : sender == ModeWave ? VisualMode.Wave
-                 : VisualMode.Bars;
-        _app.SetMode(mode);
+        var modes = Enum.GetValues<VisualMode>();
+        _app.SetMode(modes[(Array.IndexOf(modes, _app.Mode) + 1) % modes.Length]);
     }
 
     private void OnWallpaperClick(object sender, RoutedEventArgs e) =>
@@ -211,9 +204,8 @@ public partial class MainWindow : Window
         switch (e.Key)
         {
             case Key.Space: Engine.TogglePlay(); break;
-            case Key.D1 or Key.NumPad1: _app.SetMode(VisualMode.Bars); break;
-            case Key.D2 or Key.NumPad2: _app.SetMode(VisualMode.Radial); break;
-            case Key.D3 or Key.NumPad3: _app.SetMode(VisualMode.Wave); break;
+            case >= Key.D1 and <= Key.D7: _app.SetMode((VisualMode)(e.Key - Key.D1)); break;
+            case >= Key.NumPad1 and <= Key.NumPad7: _app.SetMode((VisualMode)(e.Key - Key.NumPad1)); break;
             case Key.F or Key.F11: ToggleFullscreen(); break;
             case Key.Escape when _fullscreen: ToggleFullscreen(); break;
             case Key.W: _app.SetWallpaper(!_app.WallpaperRunning, showErrors: true); break;
@@ -252,6 +244,7 @@ public partial class MainWindow : Window
     {
         _timer.Stop();
         _app.Changed -= OnAppChanged;
+        _app.AppearanceChanged -= OnAppearanceChanged;
         // A file only plays while its window is open; live audio is up to the controller.
         if (Engine.Source == AudioSource.File) Engine.Stop();
     }

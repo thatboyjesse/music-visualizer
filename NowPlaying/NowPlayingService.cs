@@ -15,8 +15,11 @@ public sealed class NowPlayingService : IDisposable
 
     public TrackInfo? Current { get; private set; }
 
-    /// <summary>Most prominent hue of the current album art, used to tint the visuals.</summary>
-    public double? ThemeHue { get; private set; }
+    /// <summary>
+    /// The two main colours of the latest album cover. Kept when playback stops or a track has
+    /// no cover, so the visuals keep the last song's colours instead of switching to something else.
+    /// </summary>
+    public AlbumColors? AlbumColors { get; private set; }
 
     public event EventHandler? Changed;
 
@@ -43,8 +46,8 @@ public sealed class NowPlayingService : IDisposable
 
             bool artChanged = !ReferenceEquals(track?.Art, Current?.Art);
             Current = track;
-            if (artChanged)
-                ThemeHue = track?.Art is BitmapSource bmp ? ImageUtil.DominantHue(bmp) : null;
+            if (artChanged && track?.Art is BitmapSource bmp && ImageUtil.Palette(bmp) is { } colors)
+                AlbumColors = colors;
 
             Changed?.Invoke(this, EventArgs.Empty);
         }

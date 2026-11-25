@@ -17,9 +17,9 @@ How Music Visualizer works, from sound to pixels. It's meant for anyone changing
                      SpectrumAnalyzer (window → FFT → 96 log bands → smoothing)
                                    │
                                    ▼
-                     VisualizerCanvas.OnRender (Bars / Radial / Wave)
+                     VisualizerCanvas.OnRender (Bars, Mirror, Blocks, Spectrum, Radial, Ring, Wave)
                           ▲                          ▲
-         ThemeHue (album-art colour)        hosted in WallpaperWindow (behind desktop icons)
+     AlbumColors (album-art colours)        hosted in WallpaperWindow (behind desktop icons)
                           │                 and/or MainWindow (the optional visualizer window)
  NowPlayingService ───────┘
    └─ MediaSessionProvider  (Windows media session: Spotify desktop app, no sign-in)
@@ -39,22 +39,23 @@ Everything runs in one process. The UI thread owns rendering, now-playing pollin
 | `Core/StartWithWindows.cs` | The per-user `Run` registry entry. |
 | `Core/Uninstaller.cs` | `--uninstall`: removes the app, shortcuts, registry entries and settings. |
 | `Core/DarkTitleBar.cs` | Dark title bars through `DwmSetWindowAttribute`. |
-| `SettingsWindow.xaml(.cs)` | Settings and first-run welcome (opened from the tray). |
+| `SettingsWindow.xaml(.cs)` | Settings and first-run welcome: live preview, *Run as wallpaper*, screen, and Appearance / Audio / General tabs. |
 | `MainWindow.xaml(.cs)` | The optional visualizer window: control bar, intro, now-playing card, file playback, shortcuts, fullscreen. |
 | `Audio/AudioEngine.cs` | File playback, all-audio capture, per-app capture, the sample ring buffers. |
 | `Audio/ProcessAudioCapture.cs` | Captures one app's audio with the Windows process-loopback API (raw WASAPI COM interop). |
 | `Audio/AudioApps.cs` | Lists apps that have audio sessions; finds an app's top-level processes. |
 | `Visualizer/SpectrumAnalyzer.cs` | FFT and band math. |
-| `Visualizer/VisualizerCanvas.cs` | Per-frame drawing of the three modes. |
+| `Visualizer/VisualizerCanvas.cs` | Per-frame drawing of the seven styles. |
 | `NowPlaying/TrackInfo.cs` | `TrackInfo` record and the `INowPlayingProvider` interface. |
 | `NowPlaying/MediaSessionProvider.cs` | Reads the Windows media session (GSMTC). |
 | `NowPlaying/NowPlayingService.cs` | Polls the media session and computes the album-art hue. |
 | `NowPlaying/ImageUtil.cs` | Image loading and dominant-hue extraction. |
-| `Controls/NowPlayingCard.xaml(.cs)` | Album art, title, progress and transport buttons, reused by both windows. |
+| `Controls/NowPlayingCard.xaml(.cs)` | Album art, title, progress and transport buttons, reused by the windows and the preview. `Place()` puts it in a corner or edge, or hides it. |
 | `Wallpaper/DesktopWallpaper.cs` | Win32 code that places a window behind the desktop icons. |
 | `Wallpaper/Screens.cs` | Lists monitors (`EnumDisplayMonitors`/`GetMonitorInfo`) and picks the saved one. |
-| `Wallpaper/WallpaperWindow.xaml(.cs)` | The borderless window used as the wallpaper. |
+| `Wallpaper/WallpaperWindow.xaml(.cs)` | The borderless window used as the wallpaper; also fades to the normal wallpaper while nothing plays. |
 | `Settings/AppSettings.cs` | JSON settings in `%AppData%\MusicVisualizer`. |
+| `Settings/Appearance.cs` | The look: style options, bar count, colours, position, size, width, song-title position, intensity, per-frequency sensitivity, glow, background picture. |
 | `Shared/InstallInfo.cs` | Names, paths, registry keys and switches shared by the app and the installer. Compiled into both, so it's plain C# 7.3. |
 | `Setup/` | The installer: a separate .NET Framework 4.8 WPF project (`Setup.csproj`, `SetupWindow`, `Installer.cs`). |
 | `app.manifest` | Declares Windows 8/10 support, which layered child windows (the wallpaper) need. |
@@ -66,15 +67,20 @@ Everything runs in one process. The UI thread owns rendering, now-playing pollin
 The app has no main window. `App.OnStartup` reads the command line, then:
 
 - **`--uninstall`** runs `Uninstaller` and exits (see [Installer](#installer)).
-- **Single instance:** a named mutex, `Local\MusicVisualizer.Instance`. A second launch (Start menu, desktop shortcut) sets the named event `Local\MusicVisualizer.Show` and exits; the running copy sees it and opens settings.
-- **Quit signal:** the named event `Local\MusicVisualizer.Quit` makes the running copy shut down cleanly. The installer and uninstaller use it so the desktop wallpaper is restored before files are replaced. A background thread waits on both events and hands them to the UI thread.
-- **`--background`** (what *Start with Windows* uses) starts with no window. Without it, settings open. On first run (`SetupDone` false) settings always open, with the welcome banner.
+- **Launch mode** (`LaunchMode`): no arguments = **Wallpaper**, the main workflow: turn the wallpaper on, open no window, and show a one-time tray notification. `--settings` = **Settings** (the *Music Visualizer Settings* shortcut). `--background` = **Background** (*Start with Windows*): restore the saved state quietly, so the wallpaper comes back only if it was on. `--wallpaper` is treated like no arguments.
+- **Single instance:** a named mutex, `Local\MusicVisualizer.Instance`. A second launch passes its request on through a named event and exits: `Local\MusicVisualizer.Wallpaper` for a plain launch (the running copy calls `RunAsWallpaper(openSettingsIfRunning: true)`: start the wallpaper, or open settings if it's already on, so the click always does something visible), `Local\MusicVisualizer.Show` for `--settings`.
+- **Quit signal:** the named event `Local\MusicVisualizer.Quit` makes the running copy shut down cleanly. The installer and uninstaller use it so the desktop wallpaper is restored before files are replaced. A background thread waits on all three events and hands them to the UI thread.
+- The welcome banner shows the first time settings open (`SetupDone` false).
 - `ShutdownMode=OnExplicitShutdown`: closing windows never exits. Only *Quit* (tray menu or settings), the quit signal, or signing out does. `OnExit` and `OnSessionEnding` dispose `AppController`, which restores the static wallpaper and removes the tray icon.
 - Unhandled UI exceptions are logged to `%AppData%\MusicVisualizer\error.log` and shown once; the app keeps running.
 
-`AppController` is the hub. Windows talk to it (`SetMode`, `SetWallpaper`, `SetScreen`, `SetListen`, `ShowSettings`, `ShowVisualizer`, `Quit`) and listen to its `Changed` event to refresh. Settings are saved on every change, since the app is rarely closed.
+`AppController` is the hub. Windows talk to it (`RunAsWallpaper`, `SetWallpaper`, `SetMode`, `SetAppearance`, `SetBackgroundImage`, `SetScreen`, `SetListen`, `ShowSettings`, `ShowVisualizer`, `Quit`) and listen to its `Changed` event to refresh. Appearance changes raise a separate `AppearanceChanged` event, because sliders fire it many times a second and the settings window shouldn't rebuild itself each time. Settings are saved on every change (appearance changes are debounced by 600 ms), since the app is rarely closed.
 
-**When audio is captured:** only while something shows it, the wallpaper or the visualizer window (`AppController.UpdateAudio`). With neither open the app just sits in the tray, polling now-playing every 2 s. A file played in the visualizer window stops when that window closes.
+The settings preview is an exact replica: a `Grid` the size of the wallpaper screen holding a `VisualizerCanvas` and a `NowPlayingCard`, inside a `Viewbox` that scales it to fit. So positions, sizes and the song-title card look the same as on the desktop.
+
+`RunAsWallpaper` is the main action: it turns the wallpaper on and closes the settings window, so nothing covers it.
+
+**When audio is captured:** only while something shows it: the wallpaper, the visualizer window, or the settings window's preview (`AppController.UpdateAudio`). With neither open the app just sits in the tray, polling now-playing every 2 s. A file played in the visualizer window stops when that window closes.
 
 **Tray icon:** WPF has no tray API, so `TrayIcon` uses Windows Forms' `NotifyIcon` (`UseWindowsForms` in the csproj). Its global `using`s are removed in the csproj so `Application`, `MessageBox`, `Color` and so on keep meaning the WPF types. Left-click opens settings; the right-click `ContextMenuStrip` uses a custom dark `ProfessionalColorTable`. A one-time balloon tells the user the app is still running after they close its first window.
 
@@ -116,14 +122,22 @@ Each frame:
 6. **Peaks:** each band's peak holds for 0.35 s, then falls at 0.5 per second.
 7. **Bass:** the average of bands under 150 Hz drives the pulsing glow, the radial ring size and the hue speed.
 
+8. **Per-frequency sensitivity** (`SetEq`): the four *Sensitivity by frequency* sliders are dB offsets anchored at 100 Hz (bass), 700 Hz (low mids), 3.5 kHz (high mids) and 10 kHz (treble). Each band gets a value interpolated linearly in log-frequency between the two nearest anchors (flat beyond the ends), so there are no steps between neighbouring bars. It's added to the band's dB before the mapping, together with the overall *Intensity* gain.
+
+The number of bands is the *Number of bars* setting (16 to 128); the canvas creates a new analyzer when it changes.
+
 To tune how the visuals feel, change `MinDb`/`MaxDb` (sensitivity), the tilt, or the two smoothing rates.
 
 ## Rendering: `VisualizerCanvas`
 
 A `FrameworkElement` hooked to `CompositionTarget.Rendering`, which fires once per display frame. Each tick it runs the analyzer, then calls `InvalidateVisual()`, and WPF calls `OnRender`, where everything is drawn with `DrawingContext`.
 
-- **Brushes and pens are cached:** 360 frozen hue brushes, 36 glow gradients, and radial pens rebuilt only when the size changes. This keeps garbage-collection pressure low at 60 fps.
-- **Colour:** `BaseHue` is either a rainbow that drifts faster with the bass, or, when `ThemeHue` is set from album art, that hue swaying ±12°. `HueSpread` narrows the spread across bars in themed mode, so the colours stay on-palette.
+- **Brushes and pens are cached:** a palette of 360 frozen brushes, 36 glow gradients, and radial pens created on demand (reset when the spoke width changes). This keeps garbage-collection pressure low at 60 fps.
+- **Colour** (`Appearance.Colors`): the palette is 360 frozen brushes. For *Rainbow* it is the hue wheel and `ColorIndex(t)` returns `BaseHue + t × spread`, where `BaseHue` drifts faster with the bass. For *Song art colors* and *My colors* it is 360 steps of a two-colour gradient and `ColorIndex(t)` maps the position along the spectrum (0..1) straight onto it. Song-art mode uses `AlbumColors` and never falls back to the rainbow: before the first cover is known it uses the user's two colours. When the song changes, the drawn colours glide towards the new ones (exponential, about a second), and the palette is rebuilt only when the colours actually change.
+- **Appearance** (`VisualizerCanvas.Look`): positions and sizes are fractions of the surface, so the settings preview (sized to the wallpaper screen's aspect ratio) matches the wallpaper. `PositionX/Y` is the visualizer's centre: the bars group (bars plus reflection) is centred on it, as are the radial ring and the wave's midline. `Size` scales bar height and width (width capped at the screen), the ring, and the wave. `Intensity` is a gain on the analyzer (`SpectrumAnalyzer.Gain`, added in dB before the −72…−12 dB mapping) and on the wave amplitude; the slider is logarithmic, ¼× to 4×. Glow strength multiplies the glow's opacity.
+- **Background picture:** decoded once per path (at most 3840 px wide, `OnLoad` so the file isn't locked) and drawn like Windows' *Fill*: scaled to cover, centred, cropped. A black layer at `BackgroundDim` opacity darkens it. `AppController.SetBackgroundImage` copies the chosen file to `%AppData%\MusicVisualizer\background-<ticks>.<ext>` and deletes older copies; the new name each time makes every view reload it.
+- **Styles:** *Bars*, *Mirror* (bars up and down from the centre line), *Blocks* (each bar drawn as up to 20 separate cells), *Spectrum* (a curve through the bar tops made of quadratic Béziers through the midpoints between neighbours, filled at low opacity; its reflection is the same geometry under a flipping `MatrixTransform`), *Radial* (spokes around a circle), *Ring* (the waveform as the radius of a closed circle; the last samples are blended into the first so it closes without a jump) and *Wave*. Line and area styles use `SpectrumBrush()`, a left-to-right gradient through five points of the current palette.
+- **Width** sets how much of the screen the bar-based styles and the wave span (`BarsWidth`); *Size* sets height and the size of the round styles.
 - **Wave mode** starts drawing at a rising zero-crossing. This works like an oscilloscope trigger and keeps the waveform from sliding sideways.
 - `IsPaused` skips analysis and drawing (window minimized, or the wallpaper is showing instead).
 
@@ -139,9 +153,11 @@ Each poll extrapolates the track position with `TrackInfo.PositionAt(now)`. The 
 
 This uses WinRT's `GlobalSystemMediaTransportControlsSessionManager`, the same source as the Windows volume flyout. That's why the project targets `net8.0-windows10.0.19041.0`. It prefers a session whose app ID contains "Spotify", otherwise Windows' current session. Album art comes from `props.Thumbnail`, and play/next/previous use `TryTogglePlayPauseAsync` and related calls.
 
-### Album-art colour (`ImageUtil.DominantHue`)
+### Album-art colours (`ImageUtil.Palette`)
 
-The art is scaled to 32×32 and converted to BGRA. Each pixel with saturation ≥ 0.25 and value ≥ 0.2 votes into a 36-bin hue histogram, weighted by saturation × value. The bins are smoothed with their neighbours and the winner is returned. Mostly grey covers return `null`, so the visuals keep the rainbow. `AppController.ThemeHue` passes the hue on only while capturing live audio, since a local file has nothing to do with Spotify's cover.
+The cover is scaled to 48×48 and each pixel votes into a 6×6×6 RGB grid. Votes are weighted towards colourful pixels (`0.25 + saturation × 1.5`), so a small red logo can beat a large grey background, and near-black pixels count for little. If colourful cells (at least 30% saturated) hold more than about 4% of the vote, only colourful cells can win, so a red frame on a dark grey cover gives red rather than grey. The winning cell's average colour is the first colour. The second is the strongest remaining cell that is clearly different (perceptual distance above 55); if there is none, it's a lighter shade of the first. Both are then made visible on the dark background: brightness at least 85%, and colourful ones at least 55% saturated, while greys stay grey (so black-and-white covers give greys and white).
+
+`NowPlayingService.AlbumColors` keeps the last cover's colours when playback stops or a track has no cover. The colours are used whenever *Song art colors* is selected, whatever the audio source.
 
 ## Live wallpaper
 
@@ -153,6 +169,18 @@ Windows draws the desktop in Explorer's `Progman` window. Sending it the undocum
 | 11 24H2 and later | `SHELLDLL_DefView` and `WorkerW` are both **children of Progman** | `SetParent` into Progman, z-order just below `SHELLDLL_DefView`, **and make the window layered** |
 
 In both cases the window becomes `WS_CHILD` and covers one monitor. Child coordinates are relative to the parent, which spans the whole virtual screen and can start left of or above the main monitor (for example a second screen placed higher gives the parent a negative top). So the position is the monitor's bounds minus the parent's origin (`DesktopWallpaper.Place`).
+
+### Back to the normal wallpaper while nothing plays
+
+Each `SampleRing` remembers when it last received an audible block (peak above about −66 dBFS), and `AudioEngine.SecondsSinceSound` is the most recent of those across all sources. It's very large when nothing is captured at all, for example when only certain apps are chosen and none of them is running.
+
+`AppController.CheckIdle` runs every 250 ms. After `SilentSeconds` of quiet (also counted from when the wallpaper appeared, so it doesn't fade out before the first sound arrives) it calls `WallpaperWindow.SetIdle(true)`; as soon as sound returns, `SetIdle(false)`.
+
+The switch is meant to be invisible. Going idle, the window fades in `Desk`, a copy of the desktop background: the desktop colour (`GetSysColor(COLOR_DESKTOP)`) plus the wallpaper picture (`SPI_GETDESKWALLPAPER`), stretched to match the user's fit mode (`WallpaperStyle`/`TileWallpaper` in `HKCU\Control Panel\Desktop`: Fill, Fit, Stretch, Center). When the fade ends, the window is hidden with `ShowWindow(SW_HIDE)` so Explorer's real wallpaper shows, and rendering pauses. Waking shows the window again with the copy fully opaque, re-asserts the z-order (`DesktopWallpaper.MoveTo`), and fades the copy out. Capture keeps running while idle, so it notices when sound returns.
+
+### Song title
+
+`NowPlayingCard.Place(TitlePosition)` sets the card's alignment and margin (bottom positions leave 88 px for the taskbar), or hides it.
 
 ### Choosing the screen
 
@@ -206,15 +234,17 @@ If the window sits in the right place but the screen shows only the plain wallpa
   1. Ask a running copy to quit through the quit event, wait for its mutex to disappear, and kill it if it's still running from the install folder.
   2. If the 1.0.0 Inno Setup install is present (its `{8F3C…}_is1` uninstall key), run its uninstaller silently.
   3. Stream `payload.exe` to `MusicVisualizer.exe.new`, then swap it in, retrying while the old file is still locked.
-  4. Start-menu shortcut, and optionally a desktop shortcut (`WScript.Shell`).
+  4. Start-menu shortcuts **Music Visualizer** (no arguments: runs the wallpaper) and **Music Visualizer Settings** (`--settings`), and optionally a desktop shortcut (`WScript.Shell`).
   5. The *Installed apps* entry under `HKCU\…\Uninstall\MusicVisualizer`, with `UninstallString = "<exe>" --uninstall`.
   6. The `Run` entry if *Start with Windows* is ticked (on by default), otherwise remove it.
 - **Updates:** an existing install is detected from the uninstall key. The folder is kept (so shortcuts and the startup entry stay valid) and settings are untouched.
-- **Uninstall** is done by the app itself (`Core/Uninstaller.cs`), so no separate uninstaller is left in the folder. It quits the running copy, removes the registry entries, shortcuts and `%AppData%\MusicVisualizer`, then starts a hidden `cmd` that waits two seconds and deletes the install folder, since a running exe can't delete itself. It only deletes the folder registered as `InstallLocation`, and only when the exe is running from there, so running `--uninstall` from a dev build can't remove the wrong folder.
+- **Uninstall from Setup:** when an install exists, the options page shows **Uninstall**. `Installer.Uninstall` closes the running copy and removes everything itself (registry entries, the three shortcuts, settings, and the install folder if it really contains `MusicVisualizer.exe`), so it also cleans up a broken install. For the 1.0.0 Inno Setup install it runs that uninstaller instead.
+- **Uninstall** from *Settings → Apps* is done by the app itself (`Core/Uninstaller.cs`), so no separate uninstaller is left in the folder. It quits the running copy, removes the registry entries, shortcuts and `%AppData%\MusicVisualizer`, then starts a hidden `cmd` that waits two seconds and deletes the install folder, since a running exe can't delete itself. It only deletes the folder registered as `InstallLocation`, and only when the exe is running from there, so running `--uninstall` from a dev build can't remove the wrong folder.
 
 ## Extending
 
-- **New visual mode:** add a value to `VisualMode`, a `DrawXxx` method in `VisualizerCanvas`, and a `RadioButton` in both `MainWindow.xaml` and `SettingsWindow.xaml` (plus the matching cases in their `OnModeChecked`/sync code and `MainWindow.OnKeyDown`).
+- **New visual style:** add a value to the end of `VisualMode`, a `DrawXxx` method and a `case` in `VisualizerCanvas.OnRender`, and an entry in `SettingsWindow.Modes` (with a tooltip). The visualizer window's *Style* button and number keys pick it up from the enum.
 - **New now-playing source:** implement `INowPlayingProvider` and add it to the order in `NowPlayingService.PollAsync`.
 - **Wallpaper on all screens at once:** create one `WallpaperWindow` per entry in `Screens.All()` and attach each with its own bounds.
 - **New setting:** add a property to `AppSettings`, a setter on `AppController` that saves and raises `Changed`, and a control in `SettingsWindow` (update it in `Sync()`).
+- **New appearance option:** add it to `Appearance`, use it in `VisualizerCanvas`, and add a control on the Appearance tab (read in `SyncLook()`, written in the matching handler, which calls `SetAppearance`).

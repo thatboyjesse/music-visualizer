@@ -1,8 +1,15 @@
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+using Microsoft.Win32;
 using MusicVisualizer.Audio;
 using MusicVisualizer.NowPlaying;
+using MusicVisualizer.Settings;
 using MusicVisualizer.Visualizer;
 
 namespace MusicVisualizer.Wallpaper;
@@ -12,18 +19,28 @@ public partial class WallpaperWindow : Window
 {
     private bool _keepLayered;
 
-    public WallpaperWindow(AudioEngine engine, NowPlayingService nowPlaying, VisualMode mode)
+    public WallpaperWindow(AudioEngine engine, NowPlayingService nowPlaying, VisualMode mode, Appearance look)
     {
         InitializeComponent();
         Viz.Attach(engine);
         Viz.Mode = mode;
+        Viz.Look = look;
+        Card.Place(look.Title);
         Card.ShowControls = false; // the wallpaper can't receive clicks
         Card.Scale = 1.25;
         Card.Bind(nowPlaying);
     }
 
     public VisualMode Mode { set => Viz.Mode = value; }
-    public double? ThemeHue { set => Viz.ThemeHue = value; }
+    public AlbumColors? AlbumColors { set => Viz.AlbumColors = value; }
+    public Appearance Look
+    {
+        set
+        {
+            Viz.Look = value;
+            Card.Place(value.Title);
+        }
+    }
 
     /// <summary>
     /// Shows the window and moves it behind the desktop icons. This happens after
@@ -32,15 +49,99 @@ public partial class WallpaperWindow : Window
     /// </summary>
     public void ShowAsWallpaper(Int32Rect screen)
     {
+        _screen = screen;
         Show();
         var hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(hwnd).AddHook(KeepLayeredHook);
         DesktopWallpaper.Attach(hwnd, screen, beforeMakingLayered: () => _keepLayered = true);
     }
 
+    /// <summary>True while the normal desktop wallpaper is showing instead (nothing playing).</summary>
+    public bool IsIdle { get; private set; }
+
+    /// <summary>
+    /// Switches between the visualizer and the user's normal wallpaper. Going idle fades in a copy of
+    /// the desktop background (same picture, fit and colour) and then hides the window, so the real
+    /// wallpaper takes over with no visible jump. Waking shows the window with that copy on top and
+    /// fades it out.
+    /// </summary>
+    public void SetIdle(bool idle)
+    {
+        if (idle == IsIdle) return;
+        IsIdle = idle;
+        var hwnd = new WindowInteropHelper(this).Handle;
+
+        if (idle)
+        {
+            LoadDesktopBackground();
+            var fade = new DoubleAnimation(1, TimeSpan.FromSeconds(1.2));
+            fade.Completed += (_, _) =>
+            {
+                if (!IsIdle) return; // woke up during the fade
+                Viz.IsPaused = true;
+                ShowWindow(hwnd, SW_HIDE);
+            };
+            Desk.BeginAnimation(OpacityProperty, fade);
+        }
+        else
+        {
+            Viz.IsPaused = false;
+            Desk.BeginAnimation(OpacityProperty, null);
+            Desk.Opacity = 1;
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            // Back under the icons, above Explorer's own wallpaper layer (see DesktopWallpaper.MoveTo).
+            DesktopWallpaper.MoveTo(hwnd, _screen);
+            Desk.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromSeconds(0.4)));
+        }
+    }
+
+    /// <summary>Reproduces the desktop background: solid colour plus the wallpaper picture in the user's fit mode.</summary>
+    private void LoadDesktopBackground()
+    {
+        int c = GetSysColor(1 /* COLOR_DESKTOP */);
+        Desk.Background = new SolidColorBrush(Color.FromRgb((byte)(c & 0xFF), (byte)((c >> 8) & 0xFF), (byte)((c >> 16) & 0xFF)));
+        DeskImage.Source = null;
+
+        var path = new StringBuilder(520);
+        if (!SystemParametersInfo(0x0073 /* SPI_GETDESKWALLPAPER */, (uint)path.Capacity, path, 0) || !File.Exists(path.ToString()))
+            return;
+        try
+        {
+            var img = new BitmapImage();
+            img.BeginInit();
+            img.UriSource = new Uri(path.ToString());
+            img.CacheOption = BitmapCacheOption.OnLoad;
+            img.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+            img.EndInit();
+            img.Freeze();
+            DeskImage.Source = img;
+        }
+        catch (Exception ex) when (ex is IOException or NotSupportedException or UriFormatException)
+        {
+            return;
+        }
+
+        // HKCU\Control Panel\Desktop: WallpaperStyle 10 = Fill, 6 = Fit, 2 = Stretch, 22 = Span, 0 = Center/Tile.
+        using var key = Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop");
+        string style = key?.GetValue("WallpaperStyle") as string ?? "10";
+        bool tile = key?.GetValue("TileWallpaper") as string == "1";
+        DeskImage.Stretch = style switch
+        {
+            "6" => Stretch.Uniform,
+            "2" => Stretch.Fill,
+            "0" when !tile => Stretch.None,
+            _ => Stretch.UniformToFill,
+        };
+    }
+
+    private Int32Rect _screen;
+
     /// <summary>Moves the running wallpaper to cover another screen.</summary>
-    public void MoveTo(Int32Rect screen) =>
+    public void MoveTo(Int32Rect screen)
+    {
+        _screen = screen;
         DesktopWallpaper.MoveTo(new WindowInteropHelper(this).Handle, screen);
+    }
 
     /// <summary>
     /// WPF vetoes WS_EX_LAYERED on windows it didn't create as layered (it rewrites the new
@@ -61,4 +162,15 @@ public partial class WallpaperWindow : Window
         }
         return IntPtr.Zero;
     }
+
+    private const int SW_HIDE = 0, SW_SHOWNOACTIVATE = 4;
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hwnd, int cmd);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSysColor(int index);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SystemParametersInfoW")]
+    private static extern bool SystemParametersInfo(uint action, uint param, StringBuilder pvParam, uint winIni);
 }

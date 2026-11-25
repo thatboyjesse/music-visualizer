@@ -8,9 +8,11 @@ namespace MusicVisualizer;
 
 /// <summary>
 /// Entry point. Command line:
-///   (none)          start, or bring up settings if already running
-///   --background    start in the tray with no window (used by "Start with Windows")
-///   --wallpaper     like --background and turns the wallpaper on (older shortcut)
+///   (none)          run as the wallpaper with no window (the main way to start it). If it's already
+///                   running, start the wallpaper, or open settings when the wallpaper is already on.
+///   --settings      open settings (the "Music Visualizer Settings" Start-menu shortcut)
+///   --background    restore the saved state quietly in the tray (used by "Start with Windows")
+///   --wallpaper     same as no arguments (kept for older shortcuts)
 ///   --uninstall     remove the app (Settings → Apps → Uninstall); add --quiet for no prompts
 /// </summary>
 public partial class App : Application
@@ -30,12 +32,22 @@ public partial class App : Application
             return;
         }
 
-        // One copy only. A second launch (Start menu, desktop shortcut) asks the running copy to show settings.
+        var launch = Has(InstallInfo.SettingsArg) ? LaunchMode.Settings
+                   : Has(InstallInfo.BackgroundArg) ? LaunchMode.Background
+                   : LaunchMode.Wallpaper;
+
+        // One copy only. A second launch passes its request to the running copy.
         _instance = new Mutex(true, InstallInfo.InstanceMutex, out bool first);
         if (!first)
         {
-            if (EventWaitHandle.TryOpenExisting(InstallInfo.ShowEvent, out var show))
-                using (show) show.Set();
+            string? signal = launch switch
+            {
+                LaunchMode.Settings => InstallInfo.ShowEvent,
+                LaunchMode.Wallpaper => InstallInfo.WallpaperEvent,
+                _ => null,
+            };
+            if (signal is not null && EventWaitHandle.TryOpenExisting(signal, out var ev))
+                using (ev) ev.Set();
             _instance.Dispose();
             _instance = null;
             Shutdown();
@@ -45,24 +57,26 @@ public partial class App : Application
         DispatcherUnhandledException += OnUnhandledException;
         ListenForSignals();
 
-        bool wallpaper = Has("--wallpaper");
-        bool background = wallpaper || Has(InstallInfo.BackgroundArg);
         _controller = new AppController();
-        _controller.Start(showSettings: !background, forceWallpaper: wallpaper);
+        _controller.Start(launch);
     }
 
-    /// <summary>Other processes signal us through named events: show settings, or quit (installer/uninstaller).</summary>
+    /// <summary>Other processes signal us through named events: show settings, start the wallpaper, or quit (installer/uninstaller).</summary>
     private void ListenForSignals()
     {
         var show = new EventWaitHandle(false, EventResetMode.AutoReset, InstallInfo.ShowEvent);
+        var wallpaper = new EventWaitHandle(false, EventResetMode.AutoReset, InstallInfo.WallpaperEvent);
         var quit = new EventWaitHandle(false, EventResetMode.AutoReset, InstallInfo.QuitEvent);
         new Thread(() =>
         {
             while (true)
             {
-                int which = WaitHandle.WaitAny(new WaitHandle[] { show, quit });
-                if (which == 0) Dispatcher.BeginInvoke(() => _controller?.ShowSettings());
-                else { Dispatcher.BeginInvoke(Shutdown); return; }
+                switch (WaitHandle.WaitAny(new WaitHandle[] { show, wallpaper, quit }))
+                {
+                    case 0: Dispatcher.BeginInvoke(() => _controller?.ShowSettings()); break;
+                    case 1: Dispatcher.BeginInvoke(() => _controller?.RunAsWallpaper(openSettingsIfRunning: true)); break;
+                    default: Dispatcher.BeginInvoke(Shutdown); return;
+                }
             }
         }) { IsBackground = true, Name = "Signal listener" }.Start();
     }
