@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The installer. It targets .NET Framework 4.8, which is built into Windows 10 and 11,
+    so Setup.exe needs no runtime of its own and is barely bigger than the app it carries.
+    The app (publish\MusicVisualizer.exe) is embedded as a resource; build.ps1 passes its path:
+      dotnet build Setup\Setup.csproj -c Release -p:PayloadPath=..\publish\MusicVisualizer.exe -p:Version=1.1.0
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>MusicVisualizer.Setup</RootNamespace>
+    <AssemblyName>MusicVisualizerSetup</AssemblyName>
+    <ApplicationIcon>..\Assets\app.ico</ApplicationIcon>
+    <!-- asInvoker: without a manifest, Windows guesses that an exe named "*Setup*" needs admin. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.1.0</Version>
+    <Product>Music Visualizer Setup</Product>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\InstallInfo.cs" Link="InstallInfo.cs" />
+    <Resource Include="..\Assets\app.ico" Link="app.ico" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PayloadPath)' != ''">
+    <EmbeddedResource Include="$(PayloadPath)" LogicalName="payload.exe" />
+  </ItemGroup>
+
+</Project>

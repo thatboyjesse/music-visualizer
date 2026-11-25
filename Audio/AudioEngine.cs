@@ -4,25 +4,29 @@ using NAudio.Wave;
 
 namespace MusicVisualizer.Audio;
 
-public enum AudioSource { None, File, Loopback }
+public enum AudioSource { None, File, Loopback, Apps }
 
 /// <summary>
-/// Plays an audio file or captures system audio, and keeps the most recent
-/// mono samples in a ring buffer for the visualizer to analyse.
+/// Plays an audio file, captures all system audio, or captures only chosen apps, and keeps
+/// the most recent mono samples for the visualizer to analyse.
 /// </summary>
 public sealed class AudioEngine : IDisposable
 {
     public const int FftSize = 2048;
 
-    private readonly float[] _ring = new float[FftSize];
     private readonly object _lock = new();
-    private int _ringPos;
-    private long _lastWrite;
+    private readonly SampleRing _main = new();
     private float[] _scratch = Array.Empty<float>();
 
     private WaveOutEvent? _out;
     private AudioFileReader? _reader;
     private WasapiLoopbackCapture? _loop;
+
+    // App capture: one capture (and ring buffer) per top-level process of each chosen app.
+    private readonly Dictionary<int, (ProcessAudioCapture? Capture, SampleRing Ring)> _apps = new();
+    private string[] _appNames = Array.Empty<string>();
+    private System.Threading.Timer? _appTimer;
+    private int _appGeneration;
 
     public event EventHandler? StateChanged;
 
@@ -30,9 +34,12 @@ public sealed class AudioEngine : IDisposable
     public string? TrackName { get; private set; }
     public int SampleRate { get; private set; } = 48000;
 
+    /// <summary>Last error from starting an app capture (e.g. Windows too old), for the settings window.</summary>
+    public string? AppCaptureError { get; private set; }
+
     public bool IsPlaying => Source switch
     {
-        AudioSource.Loopback => true,
+        AudioSource.Loopback or AudioSource.Apps => true,
         AudioSource.File => _out?.PlaybackState == PlaybackState.Playing,
         _ => false,
     };
@@ -47,7 +54,7 @@ public sealed class AudioEngine : IDisposable
         try
         {
             var output = new WaveOutEvent { DesiredLatency = 100 };
-            output.Init(new TapSampleProvider(reader, AddSamples));
+            output.Init(new TapSampleProvider(reader, (b, o, c, ch) => _main.Add(b, o, c, ch)));
             output.PlaybackStopped += OnPlaybackStopped;
             _reader = reader;
             _out = output;
@@ -64,6 +71,7 @@ public sealed class AudioEngine : IDisposable
         RaiseStateChanged();
     }
 
+    /// <summary>Captures everything the default output device plays.</summary>
     public void StartLoopback()
     {
         Stop();
@@ -75,6 +83,73 @@ public sealed class AudioEngine : IDisposable
         TrackName = "System audio";
         capture.StartRecording();
         RaiseStateChanged();
+    }
+
+    /// <summary>
+    /// Captures only the named apps (process names without ".exe"). Apps that aren't running yet
+    /// are picked up when they start: the process list is re-checked every 2 seconds.
+    /// </summary>
+    public void StartApps(IReadOnlyCollection<string> appNames)
+    {
+        Stop();
+        _appNames = appNames.ToArray();
+        SampleRate = ProcessAudioCapture.SampleRate;
+        Source = AudioSource.Apps;
+        TrackName = appNames.Count == 1 ? appNames.First() : $"{appNames.Count} apps";
+        AppCaptureError = null;
+        int generation = ++_appGeneration;
+        _appTimer = new System.Threading.Timer(_ => RefreshApps(generation), null, 0, 2000);
+        RaiseStateChanged();
+    }
+
+    private void RefreshApps(int generation)
+    {
+        var wanted = new HashSet<int>();
+        foreach (var name in _appNames)
+            foreach (int pid in AudioApps.RootProcessIds(name)) wanted.Add(pid);
+
+        lock (_lock)
+        {
+            if (generation != _appGeneration) return; // Stop() or a newer StartApps() happened
+
+            // Drop apps that exited and captures that ended; ended ones restart below.
+            foreach (var pid in _apps.Keys.Where(p => !wanted.Contains(p) || _apps[p].Capture is { IsRunning: false }).ToList())
+            {
+                _apps[pid].Capture?.Dispose();
+                _apps.Remove(pid);
+            }
+            foreach (int pid in wanted.Where(p => !_apps.ContainsKey(p)))
+            {
+                var ring = new SampleRing();
+                _apps[pid] = (null, ring); // reserve the slot so we don't start twice
+                _ = StartAppCapture(pid, ring, generation);
+            }
+        }
+    }
+
+    private async Task StartAppCapture(int pid, SampleRing ring, int generation)
+    {
+        try
+        {
+            var capture = await ProcessAudioCapture.StartAsync(pid, ring.Add);
+            lock (_lock)
+            {
+                if (generation == _appGeneration && _apps.ContainsKey(pid))
+                {
+                    _apps[pid] = (capture, ring);
+                    return;
+                }
+            }
+            capture.Dispose(); // stopped while we were starting
+        }
+        catch (Exception ex)
+        {
+            AppCaptureError = ex.Message;
+            lock (_lock)
+            {
+                if (generation == _appGeneration) _apps.Remove(pid); // try again on the next refresh
+            }
+        }
     }
 
     public void TogglePlay()
@@ -119,47 +194,30 @@ public sealed class AudioEngine : IDisposable
             _loop = null;
         }
 
+        _appTimer?.Dispose();
+        _appTimer = null;
         lock (_lock)
         {
-            Array.Clear(_ring);
-            _ringPos = 0;
+            _appGeneration++;
+            foreach (var (capture, _) in _apps.Values) capture?.Dispose();
+            _apps.Clear();
         }
+        _main.Clear();
 
         Source = AudioSource.None;
         TrackName = null;
         RaiseStateChanged();
     }
 
-    /// <summary>Copies the latest <see cref="FftSize"/> samples, oldest first.
-    /// Returns silence if no audio has arrived recently (paused, nothing playing).</summary>
+    /// <summary>Copies the latest <see cref="FftSize"/> samples, oldest first, summing all sources.
+    /// A source that hasn't delivered audio recently (paused, silent app) contributes silence.</summary>
     public void GetSamples(float[] dest)
     {
+        Array.Clear(dest);
+        _main.AddTo(dest);
         lock (_lock)
         {
-            double age = (Stopwatch.GetTimestamp() - _lastWrite) / (double)Stopwatch.Frequency;
-            if (age > 0.15)
-            {
-                Array.Clear(dest);
-                return;
-            }
-            for (int i = 0; i < FftSize; i++)
-                dest[i] = _ring[(_ringPos + i) % FftSize];
-        }
-    }
-
-    private void AddSamples(float[] buffer, int offset, int count, int channels)
-    {
-        lock (_lock)
-        {
-            int end = offset + count;
-            for (int i = offset; i + channels <= end; i += channels)
-            {
-                float sum = 0;
-                for (int c = 0; c < channels; c++) sum += buffer[i + c];
-                _ring[_ringPos] = sum / channels;
-                _ringPos = (_ringPos + 1) % FftSize;
-            }
-            _lastWrite = Stopwatch.GetTimestamp();
+            foreach (var (_, ring) in _apps.Values) ring.AddTo(dest);
         }
     }
 
@@ -173,7 +231,7 @@ public sealed class AudioEngine : IDisposable
             int n = e.BytesRecorded / 4;
             if (_scratch.Length < n) _scratch = new float[n];
             Buffer.BlockCopy(e.Buffer, 0, _scratch, 0, n * 4);
-            AddSamples(_scratch, 0, n, fmt.Channels);
+            _main.Add(_scratch, 0, n, fmt.Channels);
         }
         else if (fmt.BitsPerSample == 16)
         {
@@ -181,7 +239,7 @@ public sealed class AudioEngine : IDisposable
             if (_scratch.Length < n) _scratch = new float[n];
             for (int i = 0; i < n; i++)
                 _scratch[i] = BitConverter.ToInt16(e.Buffer, i * 2) / 32768f;
-            AddSamples(_scratch, 0, n, fmt.Channels);
+            _main.Add(_scratch, 0, n, fmt.Channels);
         }
     }
 
@@ -190,6 +248,51 @@ public sealed class AudioEngine : IDisposable
     private void RaiseStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);
 
     public void Dispose() => Stop();
+
+    /// <summary>The latest <see cref="FftSize"/> mono samples from one source. Thread-safe.</summary>
+    private sealed class SampleRing
+    {
+        private readonly float[] _ring = new float[FftSize];
+        private int _pos;
+        private long _lastWrite;
+
+        public void Add(float[] buffer, int offset, int count, int channels)
+        {
+            lock (_ring)
+            {
+                int end = offset + count;
+                for (int i = offset; i + channels <= end; i += channels)
+                {
+                    float sum = 0;
+                    for (int c = 0; c < channels; c++) sum += buffer[i + c];
+                    _ring[_pos] = sum / channels;
+                    _pos = (_pos + 1) % FftSize;
+                }
+                _lastWrite = Stopwatch.GetTimestamp();
+            }
+        }
+
+        public void AddTo(float[] dest)
+        {
+            lock (_ring)
+            {
+                double age = (Stopwatch.GetTimestamp() - _lastWrite) / (double)Stopwatch.Frequency;
+                if (age > 0.15) return;
+                for (int i = 0; i < FftSize; i++)
+                    dest[i] += _ring[(_pos + i) % FftSize];
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_ring)
+            {
+                Array.Clear(_ring);
+                _pos = 0;
+                _lastWrite = 0;
+            }
+        }
+    }
 
     /// <summary>Passes samples through unchanged while copying them to a callback.</summary>
     private sealed class TapSampleProvider(ISampleProvider source, Action<float[], int, int, int> tap) : ISampleProvider

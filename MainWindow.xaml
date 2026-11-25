@@ -14,20 +14,20 @@
 
         <StackPanel x:Name="Intro" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,80">
             <TextBlock Text="Music Visualizer" FontSize="36" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-            <TextBlock Text="Play something in Spotify, open an audio file, or visualize whatever your PC is playing."
+            <TextBlock Text="Play something in Spotify, open an audio file, or visualize what your PC is playing."
                        Opacity="0.7" FontSize="14" Margin="0,8,0,20" HorizontalAlignment="Center"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                 <Button Content="Open audio file" Click="OnOpenClick" Background="#5B4BFF" Padding="18,9"/>
-                <Button Content="Visualize system audio" Click="OnIntroLoopbackClick" Padding="18,9"/>
+                <Button Content="Visualize live audio" Click="OnIntroLoopbackClick" Padding="18,9"/>
             </StackPanel>
             <TextBlock Opacity="0.45" FontSize="12" Margin="0,24,0,0" HorizontalAlignment="Center"
-                       Text="Space  play/pause    1–3  modes    F  fullscreen    W  wallpaper    H  hide controls"/>
+                       Text="Space  play/pause    1–3  modes    F  fullscreen    W  wallpaper    S  screen    H  hide controls"/>
         </StackPanel>
 
         <StackPanel x:Name="WallpaperNotice" HorizontalAlignment="Center" VerticalAlignment="Center"
                     Visibility="Collapsed" Margin="0,0,0,80">
             <TextBlock Text="Running as your desktop wallpaper" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-            <TextBlock Text="Minimize this window to see it. Closing this window stops the wallpaper."
+            <TextBlock Text="Close or minimize this window to see it. It keeps running from the system tray."
                        Opacity="0.65" FontSize="13" Margin="0,8,0,16" HorizontalAlignment="Center"/>
             <Button Content="Stop wallpaper" Click="OnWallpaperClick" HorizontalAlignment="Center" Margin="0"/>
         </StackPanel>
@@ -37,8 +37,8 @@
             <DockPanel LastChildFill="True">
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Content="Open" Click="OnOpenClick"/>
-                    <ToggleButton x:Name="LoopbackBtn" Content="System audio" Click="OnLoopbackClick"
-                                  ToolTip="Visualize whatever is playing on this PC (Spotify, browser, games…)"/>
+                    <ToggleButton x:Name="LoopbackBtn" Content="Live audio" Click="OnLoopbackClick"
+                                  ToolTip="Visualize what's playing on this PC: all apps, or the apps chosen in Settings"/>
                     <Button x:Name="PlayBtn" Click="OnPlayClick" FontFamily="Segoe MDL2 Assets"
                             Content="&#xE768;" Width="38" ToolTip="Play/pause file (Space)"/>
                 </StackPanel>
@@ -48,8 +48,10 @@
                     <RadioButton x:Name="ModeRadial" GroupName="Mode" Content="Radial" Checked="OnModeChecked"/>
                     <RadioButton x:Name="ModeWave" GroupName="Mode" Content="Wave" Checked="OnModeChecked" Margin="0,0,14,0"/>
                     <Button x:Name="ScreenBtn" Content="Screen 1" Click="OnScreenClick" Visibility="Collapsed"/>
-                    <ToggleButton x:Name="WallpaperBtn" Content="Wallpaper" Click="OnWallpaperClick" Margin="0"
+                    <ToggleButton x:Name="WallpaperBtn" Content="Wallpaper" Click="OnWallpaperClick"
                                   ToolTip="Run the visualizer behind your desktop icons (W)"/>
+                    <Button Content="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="38" Click="OnSettingsClick" Margin="0"
+                            ToolTip="Settings"/>
                 </StackPanel>
 
                 <Grid VerticalAlignment="Center" Margin="8,0">

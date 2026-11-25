@@ -6,13 +6,16 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>
+    <!-- Windows Forms only for the tray icon (NotifyIcon); its global usings are removed below
+         so names like Application and MessageBox still mean the WPF ones. -->
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>MusicVisualizer</RootNamespace>
     <AssemblyName>MusicVisualizer</AssemblyName>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>Music Visualizer</Product>
   </PropertyGroup>
 
@@ -21,7 +24,21 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+  <!-- The installer is its own project (Setup\Setup.csproj); keep its files out of the app. -->
+  <ItemGroup>
+    <Compile Remove="Setup\**" />
+    <Page Remove="Setup\**" />
+    <ApplicationDefinition Remove="Setup\**" />
+    <None Remove="Setup\**" />
+    <EmbeddedResource Remove="Setup\**" />
   </ItemGroup>
 
 </Project>

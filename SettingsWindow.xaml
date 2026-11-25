@@ -1,0 +1,96 @@
+<Window x:Class="MusicVisualizer.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Music Visualizer settings" Width="580" SizeToContent="Height"
+        ResizeMode="CanMinimize" WindowStartupLocation="CenterScreen"
+        Icon="pack://application:,,,/Assets/app.ico" Background="#12121A">
+    <Window.Resources>
+        <Style x:Key="Section" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Opacity" Value="0.55"/>
+            <Setter Property="Margin" Value="0,22,0,10"/>
+        </Style>
+        <Style x:Key="Hint" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Opacity" Value="0.6"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+    </Window.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="28,24,28,24">
+
+            <!-- Header -->
+            <DockPanel>
+                <Image x:Name="Logo" Width="44" Height="44" Margin="0,0,14,0"/>
+                <TextBlock x:Name="VersionText" DockPanel.Dock="Right" VerticalAlignment="Top" FontSize="12" Opacity="0.45"/>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="Music Visualizer" FontSize="22" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="StatusText" Style="{StaticResource Hint}" Margin="0,2,0,0"/>
+                </StackPanel>
+            </DockPanel>
+
+            <!-- First-run welcome -->
+            <Border x:Name="Welcome" Background="#1F1B3D" CornerRadius="8" Padding="16,14" Margin="0,18,0,0" Visibility="Collapsed">
+                <StackPanel>
+                    <TextBlock Text="Welcome! Let's set it up." FontWeight="SemiBold" FontSize="14"/>
+                    <TextBlock TextWrapping="Wrap" Margin="0,6,0,0" Opacity="0.85" FontSize="13"
+                               Text="Choose how it looks and what it listens to below. When you close this window, Music Visualizer keeps running in the system tray (bottom-right of the taskbar; it may be under the ^ arrow). Click the icon there to come back here."/>
+                </StackPanel>
+            </Border>
+
+            <!-- Wallpaper -->
+            <TextBlock Text="LIVE WALLPAPER" Style="{StaticResource Section}"/>
+            <DockPanel>
+                <ToggleButton x:Name="WallpaperToggle" DockPanel.Dock="Right" Width="70" Margin="0" Checked="OnWallpaperToggle" Unchecked="OnWallpaperToggle"/>
+                <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                    <TextBlock Text="Show the visualizer behind your desktop icons" FontSize="13"/>
+                    <TextBlock Text="Runs while Music Visualizer is in the tray. Your normal wallpaper comes back when you turn it off or quit."
+                               Style="{StaticResource Hint}" Margin="0,2,0,0"/>
+                </StackPanel>
+            </DockPanel>
+            <StackPanel x:Name="ScreenRow" Margin="0,14,0,0">
+                <TextBlock Text="Screen" FontSize="13" Margin="0,0,0,8"/>
+                <WrapPanel x:Name="ScreenButtons"/>
+            </StackPanel>
+
+            <!-- Style -->
+            <TextBlock Text="STYLE" Style="{StaticResource Section}"/>
+            <StackPanel Orientation="Horizontal">
+                <RadioButton x:Name="ModeBars" GroupName="Mode" Content="Bars" Checked="OnModeChecked"/>
+                <RadioButton x:Name="ModeRadial" GroupName="Mode" Content="Radial" Checked="OnModeChecked"/>
+                <RadioButton x:Name="ModeWave" GroupName="Mode" Content="Wave" Checked="OnModeChecked"/>
+            </StackPanel>
+
+            <!-- Listen to -->
+            <TextBlock Text="LISTEN TO" Style="{StaticResource Section}"/>
+            <StackPanel Orientation="Horizontal">
+                <RadioButton x:Name="ListenAll" GroupName="Listen" Content="Everything on this PC" Checked="OnListenChecked"/>
+                <RadioButton x:Name="ListenApps" GroupName="Listen" Content="Only the apps I choose" Checked="OnListenChecked"/>
+            </StackPanel>
+            <Border x:Name="AppsPanel" Background="#0B0B12" CornerRadius="8" Padding="14,12" Margin="0,12,0,0">
+                <StackPanel>
+                    <DockPanel Margin="0,0,0,10">
+                        <Button DockPanel.Dock="Right" Content="Refresh" Padding="10,4" Margin="0" Click="OnRefreshApps"/>
+                        <TextBlock Text="Apps appear here once they've played sound. Tick the ones to visualize; apps you tick are picked up whenever they're running."
+                                   Style="{StaticResource Hint}" Margin="0,0,12,0"/>
+                    </DockPanel>
+                    <StackPanel x:Name="AppList"/>
+                    <TextBlock x:Name="AppsEmpty" Text="No apps are playing sound right now. Start some music, then click Refresh."
+                               Style="{StaticResource Hint}" Visibility="Collapsed"/>
+                    <TextBlock x:Name="AppsError" Foreground="#FF8A80" TextWrapping="Wrap" FontSize="12"
+                               Margin="0,6,0,0" Visibility="Collapsed"/>
+                </StackPanel>
+            </Border>
+
+            <!-- General -->
+            <TextBlock Text="GENERAL" Style="{StaticResource Section}"/>
+            <CheckBox x:Name="StartupBox" Content="Start with Windows (in the system tray)" Checked="OnStartupClick" Unchecked="OnStartupClick"/>
+            <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                <Button Content="Open visualizer window" Background="#5B4BFF" Click="OnOpenVisualizer"/>
+                <Button Content="Quit Music Visualizer" Click="OnQuit"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Window>

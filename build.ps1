@@ -1,12 +1,12 @@
 # Builds a standalone MusicVisualizer.exe and the installer.
 #
-#   .\build.ps1                 # version from the .csproj
+#   .\build.ps1                 # version from MusicVisualizer.csproj
 #   .\build.ps1 -Version 1.2.0  # override version
 #   .\build.ps1 -SkipInstaller  # exe only
 #
 # Output:
 #   publish\MusicVisualizer.exe                 single-file, self-contained (no .NET install needed)
-#   dist\MusicVisualizer-Setup-<version>.exe    installer (needs Inno Setup 6)
+#   dist\MusicVisualizer-Setup-<version>.exe    the custom installer (Setup\), with the exe embedded
 param(
     [string]$Version,
     [switch]$SkipInstaller
@@ -31,21 +31,22 @@ dotnet publish $project -c Release -r win-x64 --self-contained true `
     -p:Version=$Version `
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
-Write-Host "Executable: $publishDir\MusicVisualizer.exe" -ForegroundColor Green
+$exe = Join-Path $publishDir 'MusicVisualizer.exe'
+Write-Host "Executable: $exe" -ForegroundColor Green
 
 if ($SkipInstaller) { return }
 
-$iscc = @(
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
+# The installer embeds the exe we just published (see Setup\Setup.csproj).
+$setupOut = Join-Path $root 'Setup\bin\out'
+if (Test-Path $setupOut) { Remove-Item -Recurse -Force $setupOut }
+dotnet build (Join-Path $root 'Setup\Setup.csproj') -c Release `
+    -p:PayloadPath=$exe `
+    -p:Version=$Version `
+    -o $setupOut
+if ($LASTEXITCODE -ne 0) { throw "Setup build failed" }
 
-if (-not $iscc) {
-    Write-Warning "Inno Setup 6 not found, so the installer was skipped. Install it with:  winget install JRSoftware.InnoSetup"
-    return
-}
-
-& $iscc "/DAppVersion=$Version" (Join-Path $root 'installer\MusicVisualizer.iss')
-if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-Write-Host "Installer: $root\dist\MusicVisualizer-Setup-$Version.exe" -ForegroundColor Green
+$dist = Join-Path $root 'dist'
+New-Item -ItemType Directory -Force $dist | Out-Null
+$installer = Join-Path $dist "MusicVisualizer-Setup-$Version.exe"
+Copy-Item (Join-Path $setupOut 'MusicVisualizerSetup.exe') $installer -Force
+Write-Host "Installer: $installer" -ForegroundColor Green

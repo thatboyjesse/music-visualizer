@@ -8,9 +8,10 @@ How Music Visualizer works, from sound to pixels. It's meant for anyone changing
             ┌──────────────── audio ────────────────┐
  file ──► AudioFileReader ─► TapSampleProvider ─► WaveOutEvent ─► speakers
                                    │ copy
- speakers ─► WasapiLoopbackCapture ┤
+ speakers ─► WasapiLoopbackCapture ┤            (all audio)
+ chosen apps ─► ProcessAudioCapture┤ (one per app, Windows process loopback)
                                    ▼
-                       AudioEngine ring buffer (2048 mono samples)
+                    AudioEngine ring buffers (2048 mono samples each, summed)
                                    │ GetSamples() every frame
                                    ▼
                      SpectrumAnalyzer (window → FFT → 96 log bands → smoothing)
@@ -18,21 +19,31 @@ How Music Visualizer works, from sound to pixels. It's meant for anyone changing
                                    ▼
                      VisualizerCanvas.OnRender (Bars / Radial / Wave)
                           ▲                          ▲
-         ThemeHue (album-art colour)        hosted in MainWindow
-                          │                 and/or WallpaperWindow (behind desktop icons)
+         ThemeHue (album-art colour)        hosted in WallpaperWindow (behind desktop icons)
+                          │                 and/or MainWindow (the optional visualizer window)
  NowPlayingService ───────┘
    └─ MediaSessionProvider  (Windows media session: Spotify desktop app, no sign-in)
+
+ AppController owns all of the above, plus the TrayIcon and the windows.
 ```
 
-Everything runs in one process. The UI thread owns rendering and now-playing polling. NAudio's threads deliver audio, which is handed over through a lock-protected ring buffer.
+Everything runs in one process. The UI thread owns rendering, now-playing polling and the windows. Audio arrives on capture threads and is handed over through lock-protected ring buffers.
 
 ## Code map
 
 | File | Responsibility |
 |---|---|
-| `App.xaml` | App-wide dark styles for buttons, toggles, text boxes. `ShutdownMode=OnMainWindowClose`. |
-| `MainWindow.xaml(.cs)` | Main UI: control bar, intro screen, now-playing card, keyboard shortcuts, fullscreen, wallpaper toggle, `--wallpaper` startup flag. Coordinates everything else. |
-| `Audio/AudioEngine.cs` | File playback, system-audio capture, the sample ring buffer. |
+| `App.xaml(.cs)` | Startup: command-line switches, single instance, signals from other processes, crash log. Dark styles for buttons, toggles, check boxes and text boxes. `ShutdownMode=OnExplicitShutdown`. |
+| `Core/AppController.cs` | Owns settings, audio, now-playing, the wallpaper, the tray icon and the windows. Decides when to capture audio. Re-attaches the wallpaper after Explorer restarts. |
+| `Core/TrayIcon.cs` | The notification-area icon and its dark right-click menu (Windows Forms `NotifyIcon`). |
+| `Core/StartWithWindows.cs` | The per-user `Run` registry entry. |
+| `Core/Uninstaller.cs` | `--uninstall`: removes the app, shortcuts, registry entries and settings. |
+| `Core/DarkTitleBar.cs` | Dark title bars through `DwmSetWindowAttribute`. |
+| `SettingsWindow.xaml(.cs)` | Settings and first-run welcome (opened from the tray). |
+| `MainWindow.xaml(.cs)` | The optional visualizer window: control bar, intro, now-playing card, file playback, shortcuts, fullscreen. |
+| `Audio/AudioEngine.cs` | File playback, all-audio capture, per-app capture, the sample ring buffers. |
+| `Audio/ProcessAudioCapture.cs` | Captures one app's audio with the Windows process-loopback API (raw WASAPI COM interop). |
+| `Audio/AudioApps.cs` | Lists apps that have audio sessions; finds an app's top-level processes. |
 | `Visualizer/SpectrumAnalyzer.cs` | FFT and band math. |
 | `Visualizer/VisualizerCanvas.cs` | Per-frame drawing of the three modes. |
 | `NowPlaying/TrackInfo.cs` | `TrackInfo` record and the `INowPlayingProvider` interface. |
@@ -44,20 +55,54 @@ Everything runs in one process. The UI thread owns rendering and now-playing pol
 | `Wallpaper/Screens.cs` | Lists monitors (`EnumDisplayMonitors`/`GetMonitorInfo`) and picks the saved one. |
 | `Wallpaper/WallpaperWindow.xaml(.cs)` | The borderless window used as the wallpaper. |
 | `Settings/AppSettings.cs` | JSON settings in `%AppData%\MusicVisualizer`. |
+| `Shared/InstallInfo.cs` | Names, paths, registry keys and switches shared by the app and the installer. Compiled into both, so it's plain C# 7.3. |
+| `Setup/` | The installer: a separate .NET Framework 4.8 WPF project (`Setup.csproj`, `SetupWindow`, `Installer.cs`). |
 | `app.manifest` | Declares Windows 8/10 support, which layered child windows (the wallpaper) need. |
-| `build.ps1`, `installer/MusicVisualizer.iss` | Release exe and Inno Setup installer. |
+| `build.ps1` | Publishes the exe, then builds the installer around it. |
 | `scripts/make-icon.ps1` | Generates `Assets/app.ico`. |
+
+## App lifecycle: tray, single instance, background
+
+The app has no main window. `App.OnStartup` reads the command line, then:
+
+- **`--uninstall`** runs `Uninstaller` and exits (see [Installer](#installer)).
+- **Single instance:** a named mutex, `Local\MusicVisualizer.Instance`. A second launch (Start menu, desktop shortcut) sets the named event `Local\MusicVisualizer.Show` and exits; the running copy sees it and opens settings.
+- **Quit signal:** the named event `Local\MusicVisualizer.Quit` makes the running copy shut down cleanly. The installer and uninstaller use it so the desktop wallpaper is restored before files are replaced. A background thread waits on both events and hands them to the UI thread.
+- **`--background`** (what *Start with Windows* uses) starts with no window. Without it, settings open. On first run (`SetupDone` false) settings always open, with the welcome banner.
+- `ShutdownMode=OnExplicitShutdown`: closing windows never exits. Only *Quit* (tray menu or settings), the quit signal, or signing out does. `OnExit` and `OnSessionEnding` dispose `AppController`, which restores the static wallpaper and removes the tray icon.
+- Unhandled UI exceptions are logged to `%AppData%\MusicVisualizer\error.log` and shown once; the app keeps running.
+
+`AppController` is the hub. Windows talk to it (`SetMode`, `SetWallpaper`, `SetScreen`, `SetListen`, `ShowSettings`, `ShowVisualizer`, `Quit`) and listen to its `Changed` event to refresh. Settings are saved on every change, since the app is rarely closed.
+
+**When audio is captured:** only while something shows it, the wallpaper or the visualizer window (`AppController.UpdateAudio`). With neither open the app just sits in the tray, polling now-playing every 2 s. A file played in the visualizer window stops when that window closes.
+
+**Tray icon:** WPF has no tray API, so `TrayIcon` uses Windows Forms' `NotifyIcon` (`UseWindowsForms` in the csproj). Its global `using`s are removed in the csproj so `Application`, `MessageBox`, `Color` and so on keep meaning the WPF types. Left-click opens settings; the right-click `ContextMenuStrip` uses a custom dark `ProfessionalColorTable`. A one-time balloon tells the user the app is still running after they close its first window.
+
+**Start with Windows** is the value `MusicVisualizer` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, set to `"<exe>" --background`. The settings window reads and writes the registry directly, so it always shows the real state. On startup `StartWithWindows.Repair()` updates the path if the exe moved.
 
 ## Audio: `AudioEngine`
 
-Two sources, one at a time (`AudioSource.None | File | Loopback`):
+One source at a time (`AudioSource.None | File | Loopback | Apps`):
 
 - **File:** NAudio's `AudioFileReader` decodes the file to 32-bit float samples, using Media Foundation for mp3, m4a and flac. It's wrapped in `TapSampleProvider`, a pass-through `ISampleProvider` that copies every block it hands to the output (`WaveOutEvent`) into the engine. So the visualizer sees exactly what's being played.
-- **Loopback:** `WasapiLoopbackCapture` records what the default output device is playing. That's how Spotify, browsers and games get visualized. Spotify doesn't expose raw audio, so this is the only way to visualize it. Float (32-bit) and 16-bit PCM capture formats are handled.
+- **Loopback** (*Everything on this PC*): `WasapiLoopbackCapture` records what the default output device is playing. Spotify doesn't expose raw audio, so capturing output is the only way to visualize it. Float (32-bit) and 16-bit PCM capture formats are handled.
+- **Apps** (*Only the apps I choose*): one `ProcessAudioCapture` per running top-level process of each chosen app, described below.
 
-Both paths call `AddSamples`, which down-mixes to mono and writes into a **ring buffer of 2048 samples** under a lock. `GetSamples` copies it out oldest-first for the analyzer.
+Each source writes into its own `SampleRing`: it down-mixes to mono and keeps the latest **2048 samples** under a lock. `GetSamples` sums all rings, oldest sample first, for the analyzer. A ring that hasn't received audio for 150 ms (paused, silent app, or WASAPI sending nothing during silence) contributes zeros, so the bars fall instead of freezing on the last frame.
 
-If no audio has arrived for 150 ms (paused, or WASAPI sends nothing during silence), `GetSamples` returns zeros. That way the bars fall instead of freezing on the last frame.
+### Per-app capture: `ProcessAudioCapture`
+
+Windows 10 build 20348 and Windows 11 can capture the audio of one process tree ("process loopback"). NAudio 2.2 contains the types for it but doesn't expose them, so this class calls WASAPI through its own COM interop:
+
+1. `ActivateAudioInterfaceAsync("VAD\Process_Loopback", IID_IAudioClient, params)`, where `params` is a `PROPVARIANT` blob holding `AUDIOCLIENT_ACTIVATION_PARAMS { PROCESS_LOOPBACK, pid, INCLUDE_TARGET_PROCESS_TREE }`. The result arrives on a completion handler, which must also implement `IAgileObject`. The COM types are public because COM can only call into interfaces it can see.
+2. `IAudioClient.Initialize(shared, LOOPBACK | AUTOCONVERTPCM, 200 ms, …)` with a format we choose: **48 kHz stereo float**. Process loopback has no mix format to ask for.
+3. A background thread polls `IAudioCaptureClient` every 10 ms and passes the samples to the app's ring.
+
+The COM objects are created on a thread-pool (MTA) thread, and calling them from the UI thread fails with `E_NOINTERFACE`. So the capture thread itself stops and releases them when `Dispose` asks it to finish.
+
+**Which processes:** settings store process names (`Spotify`, `chrome`). Every 2 s a timer resolves each name to its *top-level* processes: those whose parent has a different name (parent ID from `NtQueryInformationProcess`). Capturing a top-level process includes its children. That matters because browsers and Spotify play audio from a helper process, and capturing every process of an app would count the same audio several times. Captures for exited processes are dropped, new processes are picked up, and a capture that ended (for example when the audio device changed) is restarted.
+
+**Listing apps:** `AudioApps.WithAudioSessions` enumerates the audio sessions on every active output device (`AudioSessionManager`) and names each by its exe description. An app appears once it has opened an audio session, which normally means it has played sound.
 
 ## Analysis: `SpectrumAnalyzer`
 
@@ -96,7 +141,7 @@ This uses WinRT's `GlobalSystemMediaTransportControlsSessionManager`, the same s
 
 ### Album-art colour (`ImageUtil.DominantHue`)
 
-The art is scaled to 32×32 and converted to BGRA. Each pixel with saturation ≥ 0.25 and value ≥ 0.2 votes into a 36-bin hue histogram, weighted by saturation × value. The bins are smoothed with their neighbours and the winner is returned. Mostly grey covers return `null`, so the visuals keep the rainbow. `MainWindow.ApplyTheme` applies the hue only in system-audio mode, since a local file has nothing to do with Spotify's cover.
+The art is scaled to 32×32 and converted to BGRA. Each pixel with saturation ≥ 0.25 and value ≥ 0.2 votes into a 36-bin hue histogram, weighted by saturation × value. The bins are smoothed with their neighbours and the winner is returned. Mostly grey covers return `null`, so the visuals keep the rainbow. `AppController.ThemeHue` passes the hue on only while capturing live audio, since a local file has nothing to do with Spotify's cover.
 
 ## Live wallpaper
 
@@ -127,7 +172,12 @@ On 24H2+, Progman composes its children with DirectComposition and **only draws 
 
 `AllowsTransparency=True` (WPF's own layered mode) is **not** used. It renders through `UpdateLayeredWindow`, which costs much more per frame at full-screen size and still didn't draw inside Progman.
 
-**Teardown:** closing the wallpaper window destroys it. `RestoreStaticWallpaper()` then re-applies the user's wallpaper through `SystemParametersInfo(SPI_SETDESKWALLPAPER)`, so no frozen frame is left behind.
+**Teardown:** closing the wallpaper window destroys it. `RestoreStaticWallpaper()` then re-applies the user's wallpaper through `SystemParametersInfo(SPI_SETDESKWALLPAPER)`, so no frozen frame is left behind. This also happens on quit and sign-out.
+
+**Staying attached:** the wallpaper setting is saved, so it comes back whenever the app starts. Two situations need a retry, both handled in `AppController`:
+
+- **Right after sign-in**, Explorer may not have built the desktop yet, so `Attach` fails. The controller retries every 3 s, up to 40 times.
+- **Explorer restarts** destroy Progman, and our child window with it. A hidden top-level `HwndSource` listens for the `TaskbarCreated` broadcast that a new Explorer sends (message-only windows don't receive broadcasts), and the window's unexpected `Closed` event also triggers re-attaching with the same retry.
 
 ### Debugging the wallpaper
 
@@ -140,11 +190,31 @@ If the window sits in the right place but the screen shows only the plain wallpa
 
 ## Build and release
 
-- `build.ps1` runs `dotnet publish -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true`. The result is one `MusicVisualizer.exe` of about 75 MB, with the .NET runtime, WPF and native libraries included, so users don't need .NET installed.
-- Inno Setup (`installer/MusicVisualizer.iss`) packs it into `dist/MusicVisualizer-Setup-<version>.exe`. The installer is **per-user by default** (`PrivilegesRequired=lowest`, installs to `%LocalAppData%\Programs`). It offers a desktop icon and an optional `HKCU\...\Run` entry `"MusicVisualizer.exe" --wallpaper`. Uninstalling removes `%AppData%\MusicVisualizer`. `AppId` must stay the same across versions so upgrades replace the existing install.
+`build.ps1` does two steps:
+
+1. `dotnet publish -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true`. The result is one `MusicVisualizer.exe` of about 75 MB, with the .NET runtime, WPF and native libraries included, so users don't need .NET installed.
+2. `dotnet build Setup\Setup.csproj -p:PayloadPath=<that exe>`, which embeds the exe as the resource `payload.exe`, then copies the result to `dist\MusicVisualizer-Setup-<version>.exe`.
+
+## Installer
+
+`Setup/` is a separate WPF project with the same dark look as the app. It targets **.NET Framework 4.8**, which ships with Windows 10 and 11, so Setup.exe needs no runtime of its own and is about the size of the app it carries. The main project's csproj excludes `Setup\**` from its own build.
+
+- **Window:** borderless with its own title bar (drag to move), a decorative spectrum panel, and three pages: options → progress → done (or error).
+- **Manifest:** `Setup/app.manifest` requests `asInvoker`. Without it, Windows' installer detection sees "Setup" in the file name and asks for admin rights.
+- **Per user, no admin:** default folder `%LocalAppData%\Programs\Music Visualizer`.
+- **Steps (`Installer.Install`):**
+  1. Ask a running copy to quit through the quit event, wait for its mutex to disappear, and kill it if it's still running from the install folder.
+  2. If the 1.0.0 Inno Setup install is present (its `{8F3C…}_is1` uninstall key), run its uninstaller silently.
+  3. Stream `payload.exe` to `MusicVisualizer.exe.new`, then swap it in, retrying while the old file is still locked.
+  4. Start-menu shortcut, and optionally a desktop shortcut (`WScript.Shell`).
+  5. The *Installed apps* entry under `HKCU\…\Uninstall\MusicVisualizer`, with `UninstallString = "<exe>" --uninstall`.
+  6. The `Run` entry if *Start with Windows* is ticked (on by default), otherwise remove it.
+- **Updates:** an existing install is detected from the uninstall key. The folder is kept (so shortcuts and the startup entry stay valid) and settings are untouched.
+- **Uninstall** is done by the app itself (`Core/Uninstaller.cs`), so no separate uninstaller is left in the folder. It quits the running copy, removes the registry entries, shortcuts and `%AppData%\MusicVisualizer`, then starts a hidden `cmd` that waits two seconds and deletes the install folder, since a running exe can't delete itself. It only deletes the folder registered as `InstallLocation`, and only when the exe is running from there, so running `--uninstall` from a dev build can't remove the wrong folder.
 
 ## Extending
 
-- **New visual mode:** add a value to `VisualMode`, a `DrawXxx` method in `VisualizerCanvas`, a `RadioButton` in `MainWindow.xaml`, and a key in `OnKeyDown`/`OnModeChecked`/`SetMode`.
+- **New visual mode:** add a value to `VisualMode`, a `DrawXxx` method in `VisualizerCanvas`, and a `RadioButton` in both `MainWindow.xaml` and `SettingsWindow.xaml` (plus the matching cases in their `OnModeChecked`/sync code and `MainWindow.OnKeyDown`).
 - **New now-playing source:** implement `INowPlayingProvider` and add it to the order in `NowPlayingService.PollAsync`.
 - **Wallpaper on all screens at once:** create one `WallpaperWindow` per entry in `Screens.All()` and attach each with its own bounds.
+- **New setting:** add a property to `AppSettings`, a setter on `AppController` that saves and raises `Changed`, and a control in `SettingsWindow` (update it in `Sync()`).
