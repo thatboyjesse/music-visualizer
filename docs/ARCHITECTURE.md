@@ -59,7 +59,7 @@ Everything runs in one process. The UI thread owns rendering, now-playing pollin
 | `Shared/InstallInfo.cs` | Names, paths, registry keys and switches shared by the app and the installer. Compiled into both, so it's plain C# 7.3. |
 | `Setup/` | The installer: a separate .NET Framework 4.8 WPF project (`Setup.csproj`, `SetupWindow`, `Installer.cs`). |
 | `app.manifest` | Declares Windows 8/10 support, which layered child windows (the wallpaper) need. |
-| `build.ps1` | Publishes the exe, then builds the installer around it. |
+| `build.ps1` | Publishes the app folder, zips it, then builds the installer around the zip. |
 | `scripts/make-icon.ps1` | Generates `Assets/app.ico`. |
 
 ## App lifecycle: tray, single instance, background
@@ -217,12 +217,21 @@ The quickest checks:
 
 If the window sits in the right place but the screen shows only the plain wallpaper, the layered flag is missing.
 
+## Memory
+
+The app runs all day, so it favours a small footprint: non-concurrent GC, no dynamic PGO, and `System.GC.ConserveMemory = 7` (see the csproj). It's also installed as a self-contained folder, not a single-file exe: single-file apps load the runtime from inside the exe (decompressed into memory when compressed), so Windows can't map and share those files. Measured with the wallpaper running: about 333 MB working set / 172 MB private for the compressed single file, about 178 MB / 92 MB for 1.4.0.
+
+Setup records every file it installs in `install-files.txt`; updates delete files the new version no longer has, and both uninstallers delete only listed files plus folders left empty.
+
 ## Build and release
 
-`build.ps1` does two steps:
+`build.ps1` does three steps:
 
-1. `dotnet publish -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true`. The result is one `MusicVisualizer.exe` of about 75 MB, with the .NET runtime, WPF and native libraries included, so users don't need .NET installed.
-2. `dotnet build Setup\Setup.csproj -p:PayloadPath=<that exe>`, which embeds the exe as the resource `payload.exe`, then copies the result to `dist\MusicVisualizer-Setup-<version>.exe`.
+1. `dotnet publish -r win-x64 --self-contained -o publish\app`: a normal folder (about 470 files, 185 MB) with the .NET runtime, WPF and native libraries included, so users don't need .NET installed. A folder rather than a single file, for memory (see [Memory](#memory)).
+2. Zip that folder to `obj\payload.zip` (about 73 MB).
+3. `dotnet build Setup\Setup.csproj -p:PayloadPath=obj\payload.zip`, which embeds the zip as the resource `payload.zip`, then copies the result to `dist\MusicVisualizer-Setup-<version>.exe`.
+
+`-Portable` also publishes an uncompressed single-file `publish\MusicVisualizer.exe` for running without installing. Uncompressed because compression saves disk space but costs about 100 MB of memory at run time.
 
 ## Installer
 
@@ -234,13 +243,13 @@ If the window sits in the right place but the screen shows only the plain wallpa
 - **Steps (`Installer.Install`):**
   1. Ask a running copy to quit through the quit event, wait for its mutex to disappear, and kill it if it's still running from the install folder.
   2. If the 1.0.0 Inno Setup install is present (its `{8F3C…}_is1` uninstall key), run its uninstaller silently.
-  3. Stream `payload.exe` to `MusicVisualizer.exe.new`, then swap it in, retrying while the old file is still locked.
+  3. Extract `payload.zip` into the install folder (`ExtractPayload`), retrying each file while the old version's copy is still locked, and refusing any entry whose path would land outside the folder. Files the previous version listed in `install-files.txt` but this one doesn't have are deleted, then the new list is written.
   4. Start-menu shortcuts **Music Visualizer** (no arguments: runs the wallpaper) and **Music Visualizer Settings** (`--settings`), and optionally a desktop shortcut (`WScript.Shell`).
   5. The *Installed apps* entry under `HKCU\…\Uninstall\MusicVisualizer`, with `UninstallString = "<exe>" --uninstall`.
   6. The `Run` entry if *Start with Windows* is ticked (on by default), otherwise remove it.
 - **Updates:** an existing install is detected from the uninstall key. The folder is kept (so shortcuts and the startup entry stay valid) and settings are untouched.
-- **Uninstall from Setup:** when an install exists, the options page shows **Uninstall**. `Installer.Uninstall` closes the running copy and removes everything itself (registry entries, the three shortcuts, settings, and the install folder if it really contains `MusicVisualizer.exe`), so it also cleans up a broken install. For the 1.0.0 Inno Setup install it runs that uninstaller instead.
-- **Uninstall** from *Settings → Apps* is done by the app itself (`Core/Uninstaller.cs`), so no separate uninstaller is left in the folder. It quits the running copy, removes the registry entries, shortcuts and `%AppData%\MusicVisualizer`, then starts a hidden `cmd` that waits two seconds and deletes the install folder, since a running exe can't delete itself. It only deletes the folder registered as `InstallLocation`, and only when the exe is running from there, so running `--uninstall` from a dev build can't remove the wrong folder.
+- **Uninstall from Setup:** when an install exists, the options page shows **Uninstall**. `Installer.Uninstall` closes the running copy and removes everything itself (registry entries, the three shortcuts, settings, and the files listed in `install-files.txt`, then folders left empty), so it also cleans up a broken install. Anything else in the install folder is kept, and so is the folder if anything remains in it. For the 1.0.0 Inno Setup install it runs that uninstaller instead.
+- **Uninstall** from *Settings → Apps* is done by the app itself (`Core/Uninstaller.cs`), so no separate uninstaller is left in the folder. It quits the running copy, removes the registry entries, shortcuts and `%AppData%\MusicVisualizer`, then writes a small script to `%TEMP%` and runs it hidden, since a running exe can't delete itself. The script waits two seconds, deletes each file from `install-files.txt`, removes the folders that are then empty (deepest first, with non-recursive `rmdir`), and deletes itself. It only touches the folder registered as `InstallLocation`, and only when the exe is running from there, so running `--uninstall` from a dev build can't remove the wrong folder.
 
 ## Extending
 

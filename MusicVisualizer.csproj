@@ -15,12 +15,24 @@
     <AssemblyName>MusicVisualizer</AssemblyName>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.3.3</Version>
+    <Version>1.4.0</Version>
     <Product>Music Visualizer</Product>
+
+    <!-- Memory: the app runs all day in the background, so favour a small footprint over throughput.
+         Non-concurrent GC skips the background GC thread and its extra memory; no dynamic PGO
+         avoids instrumented copies of hot methods. ConserveMemory is set below. Measured on the
+         wallpaper: about 143 MB private memory down to about 90 MB. -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>false</TieredPGO>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Compact the GC heap more aggressively (0 = off, 9 = most). -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
   </ItemGroup>
 
   <ItemGroup>

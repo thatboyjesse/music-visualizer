@@ -38,22 +38,42 @@ public static class Uninstaller
             if (Directory.Exists(InstallInfo.DataDir)) Thread.Sleep(300);
         }
 
-        // A running exe can't delete itself, so a hidden cmd waits for us to exit and removes the folder.
-        // Only ever the registered install folder, never wherever a dev build happens to run from.
+        // A running exe can't delete itself, so a hidden script waits for us to exit, then deletes
+        // exactly the files Setup installed (its file list) and any folders left empty. Only for the
+        // registered install folder, never wherever a dev build happens to run from.
         string exeDir = Path.GetDirectoryName(Environment.ProcessPath)!;
         if (installDir is not null && SamePath(installDir, exeDir) && File.Exists(Path.Combine(installDir, InstallInfo.ExeName)))
-        {
-            Process.Start(new ProcessStartInfo("cmd.exe",
-                $"/c ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"{installDir.TrimEnd('\\')}\"")
-            {
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                WorkingDirectory = Path.GetTempPath(),
-            });
-        }
+            StartCleanupScript(installDir.TrimEnd('\\'));
 
         if (!quiet)
             MessageBox.Show("Music Visualizer was removed.", InstallInfo.AppName, MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private static void StartCleanupScript(string dir)
+    {
+        var files = InstallInfo.ReadManifest(dir);
+        if (files.Count == 0) files.Add(InstallInfo.ExeName); // installs from before 1.4.0
+        files.Add(InstallInfo.ManifestName);
+
+        var folders = files.Select(f => Path.GetDirectoryName(f)).Where(d => !string.IsNullOrEmpty(d)).Distinct()
+            .OrderByDescending(d => d!.Length); // deepest first, so parents are empty by the time we reach them
+
+        var script = new System.Text.StringBuilder();
+        script.AppendLine("@echo off");
+        script.AppendLine("ping 127.0.0.1 -n 3 > nul"); // give this process time to exit
+        foreach (var f in files) script.AppendLine($"del /f /q \"{Path.Combine(dir, f)}\" 2> nul");
+        foreach (var d in folders) script.AppendLine($"rmdir \"{Path.Combine(dir, d!)}\" 2> nul");
+        script.AppendLine($"rmdir \"{dir}\" 2> nul"); // only if empty: other files in the folder are kept
+        script.AppendLine("del \"%~f0\"");
+
+        string path = Path.Combine(Path.GetTempPath(), $"MusicVisualizer-uninstall-{Environment.ProcessId}.cmd");
+        File.WriteAllText(path, script.ToString());
+        Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{path}\"")
+        {
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetTempPath(),
+        });
     }
 
     /// <summary>Asks a running copy to quit (it restores the desktop wallpaper on the way out).</summary>

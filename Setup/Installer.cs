@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -41,7 +43,7 @@ namespace MusicVisualizer.Setup
         }
 
         public static bool HasPayload =>
-            Assembly.GetExecutingAssembly().GetManifestResourceInfo("payload.exe") != null;
+            Assembly.GetExecutingAssembly().GetManifestResourceInfo("payload.zip") != null;
 
         public static ExistingInstall FindExisting()
         {
@@ -75,7 +77,7 @@ namespace MusicVisualizer.Setup
 
             progress(0.1, "Copying files…");
             Directory.CreateDirectory(dir);
-            CopyPayload(exe, p => progress(0.1 + p * 0.75, "Copying files…"));
+            long size = ExtractPayload(dir, p => progress(0.1 + p * 0.75, "Copying files…"));
 
             progress(0.88, "Creating shortcuts…");
             // "Music Visualizer" runs the wallpaper (the main way to use it); "... Settings" opens settings.
@@ -97,7 +99,7 @@ namespace MusicVisualizer.Setup
                 key.SetValue("QuietUninstallString", "\"" + exe + "\" " + InstallInfo.UninstallArg + " " + InstallInfo.QuietArg);
                 key.SetValue("NoModify", 1, RegistryValueKind.DWord);
                 key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
-                key.SetValue("EstimatedSize", (int)(new FileInfo(exe).Length / 1024), RegistryValueKind.DWord);
+                key.SetValue("EstimatedSize", (int)(size / 1024), RegistryValueKind.DWord);
             }
 
             using (var run = Registry.CurrentUser.CreateSubKey(InstallInfo.RunKey))
@@ -139,9 +141,42 @@ namespace MusicVisualizer.Setup
             DeleteFolder(InstallInfo.DataDir);
 
             progress(0.7, "Removing files…");
-            // Only a folder that really holds the app, never whatever path the registry happens to name.
-            if (File.Exists(Path.Combine(dir, InstallInfo.ExeName))) DeleteFolder(dir);
+            RemoveInstalledFiles(dir);
             progress(1, "Done");
+        }
+
+        /// <summary>
+        /// Deletes exactly the files Setup installed (from the file list), then any folders that are
+        /// left empty, including the install folder itself. Anything else in the folder is left alone.
+        /// Installs from before 1.4.0 have no list; they were a single MusicVisualizer.exe.
+        /// </summary>
+        private static void RemoveInstalledFiles(string dir)
+        {
+            var files = InstallInfo.ReadManifest(dir);
+            if (files.Count == 0) files.Add(InstallInfo.ExeName);
+            files.Add(InstallInfo.ManifestName);
+            foreach (var f in files) DeleteFile(Path.Combine(dir, f));
+            DeleteEmptyFolders(dir);
+        }
+
+        private static void DeleteEmptyFolders(string dir)
+        {
+            if (!Directory.Exists(dir)) return;
+            foreach (var sub in Directory.GetDirectories(dir)) DeleteEmptyFolders(sub);
+            try { if (Directory.GetFileSystemEntries(dir).Length == 0) Directory.Delete(dir); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        /// <summary>Deletes a file, retrying briefly while it's still locked (an app that just exited, antivirus).</summary>
+        private static void DeleteFile(string path)
+        {
+            for (int i = 0; i < 20 && File.Exists(path); i++)
+            {
+                try { File.Delete(path); }
+                catch (IOException) { Thread.Sleep(250); }
+                catch (UnauthorizedAccessException) { Thread.Sleep(250); }
+            }
         }
 
         /// <summary>Deletes a folder, retrying briefly while files are still locked (an app that just exited, antivirus).</summary>
@@ -205,37 +240,57 @@ namespace MusicVisualizer.Setup
                 Thread.Sleep(250);
         }
 
-        private static void CopyPayload(string exe, Action<double> progress)
+        /// <summary>
+        /// Unzips the app folder into the install folder, overwriting the previous version, removes files
+        /// the previous version had that this one doesn't, and writes the new file list. Returns the total size.
+        /// </summary>
+        private static long ExtractPayload(string dir, Action<double> progress)
         {
-            string temp = exe + ".new";
-            using (var src = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.exe"))
-            using (var dst = File.Create(temp))
+            var oldFiles = InstallInfo.ReadManifest(dir);
+            var newFiles = new List<string>();
+            long size = 0;
+
+            using (var src = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip"))
+            using (var zip = new ZipArchive(src, ZipArchiveMode.Read))
             {
-                var buffer = new byte[1 << 20];
-                long total = src.Length, done = 0;
-                int read;
-                while ((read = src.Read(buffer, 0, buffer.Length)) > 0)
+                int done = 0;
+                foreach (var entry in zip.Entries)
                 {
-                    dst.Write(buffer, 0, read);
-                    done += read;
-                    progress((double)done / total);
+                    done++;
+                    if (string.IsNullOrEmpty(entry.Name)) continue; // a folder entry
+                    string relative = entry.FullName.Replace('/', '\\');
+                    string target = Path.GetFullPath(Path.Combine(dir, relative));
+                    if (!target.StartsWith(Path.GetFullPath(dir) + "\\", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("Bad path in the installer data: " + entry.FullName);
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(target));
+                    for (int attempt = 0; ; attempt++)
+                    {
+                        try
+                        {
+                            using (var input = entry.Open())
+                            using (var output = File.Create(target))
+                                input.CopyTo(output);
+                            break;
+                        }
+                        // The previous version's files can stay locked for a moment after it exits.
+                        catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < 20)
+                        {
+                            Thread.Sleep(250);
+                        }
+                    }
+                    newFiles.Add(relative);
+                    size += entry.Length;
+                    progress((double)done / zip.Entries.Count);
                 }
             }
 
-            // Replace the old exe. It can stay locked for a moment after the app exits.
-            for (int attempt = 0; ; attempt++)
-            {
-                try
-                {
-                    if (File.Exists(exe)) File.Delete(exe);
-                    File.Move(temp, exe);
-                    return;
-                }
-                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < 20)
-                {
-                    Thread.Sleep(250);
-                }
-            }
+            var keep = new HashSet<string>(newFiles, StringComparer.OrdinalIgnoreCase);
+            foreach (var f in oldFiles)
+                if (!keep.Contains(f)) DeleteFile(Path.Combine(dir, f));
+
+            File.WriteAllLines(Path.Combine(dir, InstallInfo.ManifestName), newFiles);
+            return size;
         }
 
         private static void CreateShortcut(string path, string target, string arguments, string description)

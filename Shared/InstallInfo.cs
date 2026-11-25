@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace MusicVisualizer.Shared
@@ -47,9 +48,30 @@ namespace MusicVisualizer.Shared
         public static string DesktopShortcut =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), AppName + ".lnk");
 
+        /// <summary>
+        /// List of every file Setup put in the install folder (relative paths, one per line). Updates and
+        /// uninstalls delete exactly these, so nothing else that happens to be in the folder is touched.
+        /// </summary>
+        public const string ManifestName = "install-files.txt";
+
         /// <summary>Settings folder, %AppData%\MusicVisualizer.</summary>
         public static string DataDir =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MusicVisualizer");
+
+        /// <summary>The installed files listed in <see cref="ManifestName"/> (relative paths), or an empty list.</summary>
+        public static List<string> ReadManifest(string installDir)
+        {
+            var result = new List<string>();
+            string path = Path.Combine(installDir, ManifestName);
+            if (!File.Exists(path)) return result;
+            foreach (var line in File.ReadAllLines(path))
+            {
+                string f = line.Trim();
+                // Only plain relative paths inside the folder.
+                if (f.Length > 0 && !Path.IsPathRooted(f) && !f.Contains("..")) result.Add(f);
+            }
+            return result;
+        }
 
         /// <summary>The command stored in the Run key: start hidden in the tray.</summary>
         public static string RunCommand(string exePath) => "\"" + exePath + "\" " + BackgroundArg;

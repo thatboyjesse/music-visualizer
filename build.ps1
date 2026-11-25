@@ -1,15 +1,22 @@
-# Builds a standalone MusicVisualizer.exe and the installer.
+# Builds the app and the installer.
 #
 #   .\build.ps1                 # version from MusicVisualizer.csproj
 #   .\build.ps1 -Version 1.2.0  # override version
-#   .\build.ps1 -SkipInstaller  # exe only
+#   .\build.ps1 -SkipInstaller  # app folder only
+#   .\build.ps1 -Portable       # also a single-file publish\MusicVisualizer.exe to run without installing
 #
 # Output:
-#   publish\MusicVisualizer.exe                 single-file, self-contained (no .NET install needed)
-#   dist\MusicVisualizer-Setup-<version>.exe    the custom installer (Setup\), with the exe embedded
+#   publish\app\                                the app as a self-contained folder (what Setup installs)
+#   dist\MusicVisualizer-Setup-<version>.exe    the installer, with that folder embedded as a zip
+#   publish\MusicVisualizer.exe                 (-Portable only) one self-contained exe
+#
+# Why a folder: a single-file exe has to load the .NET runtime and WPF from inside itself,
+# which costs memory (about 100 MB more with compression on). A normal folder lets Windows
+# map those files from disk and share them, so the app stays small while it runs all day.
 param(
     [string]$Version,
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$Portable
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -22,25 +29,42 @@ Write-Host "Building Music Visualizer $Version" -ForegroundColor Cyan
 
 $publishDir = Join-Path $root 'publish'
 if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
+$appDir = Join-Path $publishDir 'app'
 
 dotnet publish $project -c Release -r win-x64 --self-contained true `
-    -p:PublishSingleFile=true `
-    -p:IncludeNativeLibrariesForSelfExtract=true `
-    -p:EnableCompressionInSingleFile=true `
     -p:DebugType=none `
     -p:Version=$Version `
-    -o $publishDir
+    -o $appDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
-$exe = Join-Path $publishDir 'MusicVisualizer.exe'
-Write-Host "Executable: $exe" -ForegroundColor Green
+Write-Host "App folder: $appDir" -ForegroundColor Green
+
+if ($Portable) {
+    # Uncompressed: compression saves disk space but costs ~100 MB of memory at run time.
+    dotnet publish $project -c Release -r win-x64 --self-contained true `
+        -p:PublishSingleFile=true `
+        -p:IncludeNativeLibrariesForSelfExtract=true `
+        -p:DebugType=none `
+        -p:Version=$Version `
+        -o (Join-Path $publishDir 'portable')
+    if ($LASTEXITCODE -ne 0) { throw "portable publish failed" }
+    Move-Item (Join-Path $publishDir 'portable\MusicVisualizer.exe') (Join-Path $publishDir 'MusicVisualizer.exe')
+    Remove-Item -Recurse -Force (Join-Path $publishDir 'portable')
+    Write-Host "Portable exe: $publishDir\MusicVisualizer.exe" -ForegroundColor Green
+}
 
 if ($SkipInstaller) { return }
 
-# The installer embeds the exe we just published (see Setup\Setup.csproj).
+# Zip the folder; Setup embeds the zip (see Setup\Setup.csproj) and extracts it on install.
+$payload = Join-Path $root 'obj\payload.zip'
+New-Item -ItemType Directory -Force (Split-Path $payload) | Out-Null
+if (Test-Path $payload) { Remove-Item -Force $payload }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory($appDir, $payload, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+
 $setupOut = Join-Path $root 'Setup\bin\out'
 if (Test-Path $setupOut) { Remove-Item -Recurse -Force $setupOut }
 dotnet build (Join-Path $root 'Setup\Setup.csproj') -c Release `
-    -p:PayloadPath=$exe `
+    -p:PayloadPath=$payload `
     -p:Version=$Version `
     -o $setupOut
 if ($LASTEXITCODE -ne 0) { throw "Setup build failed" }
