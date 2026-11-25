@@ -47,6 +47,7 @@ public partial class SettingsWindow : Window
     private readonly AppController _app;
     private readonly DispatcherTimer _errorTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private Appearance _look;
+    private TitlePosition _cardBeforeHiding = TitlePosition.BottomRight; // restored when "Hide the song title card" is unticked
     private bool _syncing = true; // controls raise change events while the window is built; ignore them
 
     public SettingsWindow(AppController app)
@@ -74,6 +75,18 @@ public partial class SettingsWindow : Window
             b.Checked += (_, _) => { if (!_syncing) _app.SetMode(mode); };
             ModeButtons.Children.Add(b);
         }
+        foreach (var (place, label) in new[] { ("Below", "Below the cover"), ("Above", "Above the cover"), ("Left", "Left of the cover"), ("Right", "Right of the cover"), ("Hidden", "Hidden") })
+        {
+            var b = new RadioButton { Content = label, GroupName = "Caption", Tag = place, Margin = new Thickness(0, 0, 6, 6) };
+            b.Checked += (_, _) =>
+            {
+                if (_syncing) return;
+                _look.AlbumCaption = place != "Hidden";
+                if (place != "Hidden") _look.CaptionPlace = Enum.Parse<CaptionPlace>(place);
+                Apply();
+            };
+            CaptionButtons.Children.Add(b);
+        }
         foreach (var (position, label) in Titles)
         {
             var b = new RadioButton { Content = label, GroupName = "Title", Tag = position, Margin = new Thickness(0, 0, 6, 6) };
@@ -82,6 +95,7 @@ public partial class SettingsWindow : Window
         }
 
         Preview.Attach(app.Engine);
+        Preview.Bind(app.NowPlaying);
         PreviewCard.ShowControls = false;
         PreviewCard.Scale = 1.25; // same as on the wallpaper
         PreviewCard.Bind(app.NowPlaying);
@@ -110,7 +124,7 @@ public partial class SettingsWindow : Window
     {
         _look = _app.Settings.Look.Clone();
         Preview.Look = _app.Settings.Look;
-        PreviewCard.Place(_app.Settings.Look.Title);
+        PreviewCard.Place(_app.Settings.Look.Title, _app.Settings.Look.PeekCard);
     }
 
     /// <summary>Wallpaper state, screens, mode, listen mode and startup.</summary>
@@ -182,8 +196,16 @@ public partial class SettingsWindow : Window
         try
         {
             Preview.Look = _app.Settings.Look;
-            PreviewCard.Place(_look.Title);
+            PreviewCard.Place(_look.Title, _look.PeekCard);
             foreach (RadioButton b in TitleButtons.Children) b.IsChecked = (TitlePosition)b.Tag == _look.Title;
+            AlbumBox.IsChecked = _look.AlbumArt;
+            AlbumOptions.Visibility = _look.AlbumArt ? Visibility.Visible : Visibility.Collapsed;
+            AlbumSizeSlider.Value = _look.AlbumSize;
+            string caption = _look.AlbumCaption ? _look.CaptionPlace.ToString() : "Hidden";
+            foreach (RadioButton b in CaptionButtons.Children) b.IsChecked = (string)b.Tag == caption;
+            PeekBox.IsChecked = _look.PeekCard;
+            PeekBox.IsEnabled = _look.Title == TitlePosition.Hidden;
+            HideCardBox.IsChecked = _look.Title == TitlePosition.Hidden;
             BarCountSlider.Value = _look.BarCount;
             BarCountText.Text = _look.BarCount.ToString();
             WidthSlider.Value = _look.Width;
@@ -270,6 +292,7 @@ public partial class SettingsWindow : Window
         else if (sender == GlowSlider) _look.GlowStrength = e.NewValue;
         else if (sender == DimSlider) _look.BackgroundDim = e.NewValue;
         else if (sender == WidthSlider) _look.Width = e.NewValue;
+        else if (sender == AlbumSizeSlider) _look.AlbumSize = e.NewValue;
         else if (sender == EqBassSlider) _look.EqBass = e.NewValue;
         else if (sender == EqLowMidsSlider) _look.EqLowMids = e.NewValue;
         else if (sender == EqHighMidsSlider) _look.EqHighMids = e.NewValue;
@@ -286,6 +309,26 @@ public partial class SettingsWindow : Window
     {
         _look.PositionX = 0.5;
         _look.PositionY = 0.5;
+        Apply();
+    }
+
+    private void OnAlbumChanged(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || _app is null) return;
+        _look.AlbumArt = AlbumBox.IsChecked == true;
+        _look.PeekCard = PeekBox.IsChecked == true;
+        if (sender == HideCardBox)
+        {
+            if (HideCardBox.IsChecked == true)
+            {
+                if (_look.Title != TitlePosition.Hidden) _cardBeforeHiding = _look.Title;
+                _look.Title = TitlePosition.Hidden;
+            }
+            else if (_look.Title == TitlePosition.Hidden)
+            {
+                _look.Title = _cardBeforeHiding;
+            }
+        }
         Apply();
     }
 

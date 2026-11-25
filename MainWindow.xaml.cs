@@ -36,6 +36,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         DarkTitleBar.Apply(this);
         Viz.Attach(Engine);
+        Viz.Bind(_app.NowPlaying);
 
         Card.ShowControls = true;
         Card.Bind(_app.NowPlaying);

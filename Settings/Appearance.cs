@@ -13,6 +13,9 @@ public enum ColorMode
 /// <summary>Where the now-playing card (song title, artist, album art) sits on the wallpaper.</summary>
 public enum TitlePosition { BottomRight, BottomCenter, BottomLeft, TopRight, TopCenter, TopLeft, Hidden }
 
+/// <summary>Where the song and artist are written relative to the centred album cover.</summary>
+public enum CaptionPlace { Below, Above, Left, Right }
+
 /// <summary>
 /// How the visualizer looks. Shared by the wallpaper, the visualizer window and the settings preview.
 /// Positions and sizes are fractions of the screen, so the preview matches the wallpaper.
@@ -39,6 +42,17 @@ public sealed class Appearance
 
     // Song title
     public TitlePosition Title { get; set; } = TitlePosition.BottomRight;
+    /// <summary>When the card is hidden, show it in the bottom-right for a few seconds whenever a new song starts.</summary>
+    public bool PeekCard { get; set; } = true;
+
+    // Album art in the middle
+    /// <summary>Show the album cover in the middle: inside the circle for Radial and Ring, behind the visualizer (bouncing with the bass) for the rest.</summary>
+    public bool AlbumArt { get; set; }
+    /// <summary>Cover size as a fraction of the screen's height, 0.12 .. 0.6 (styles without a circle).</summary>
+    public double AlbumSize { get; set; } = 0.3;
+    /// <summary>Write the song and artist next to the centred cover.</summary>
+    public bool AlbumCaption { get; set; } = true;
+    public CaptionPlace CaptionPlace { get; set; } = CaptionPlace.Below;
 
     // Intensity
     /// <summary>How strongly it reacts, 0.25 .. 4 (1 = default). Applied as gain before the dB mapping.</summary>

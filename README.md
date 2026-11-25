@@ -7,6 +7,7 @@ A Windows music visualizer (C# / WPF) that lives in your **system tray** and run
 ## Features
 
 - **Live wallpaper first:** start it and it runs behind your desktop icons straight away, with no window. It lives in the system tray; click the icon to customize it. It can start with Windows.
+- **Album cover in the middle** of the screen, bouncing with the beat, with the song and artist next to it wherever you like.
 - **Make it yours:** style, colors (song-art colors, rainbow or your own), position, size, intensity, background glow and a picture behind the visualizer, with a live preview.
 - **Listen to the apps you choose:** everything on the PC, or only selected apps such as Spotify or a browser. Other sounds (game audio, notifications, calls) are ignored.
 - **Seven styles:** Bars, Mirror, Blocks, Spectrum, Radial, Ring and Wave, with as many or as few bars as you like.
@@ -55,7 +56,8 @@ The left side shows a **live preview** shaped like your wallpaper screen, the **
 | **Look** | The style (see below). Peak caps and reflection on/off. **Number of bars** (16 to 128; fewer looks bolder and simpler) and bar thickness. |
 | **Colors** | *Song art colors* (the default): a gradient between the two main colors of the album cover that's playing, for every song. Black-and-white covers give greys and white, and when the music stops it keeps the last song's colors. It never switches to the rainbow, and colors blend over about a second when the song changes. *Rainbow*: cycles colors with the beat. *My colors*: a gradient between two colors; pick from the swatches or type a hex code like `#FF4D6D`. |
 | **Position and size** | Move it left/right and up/down, scale it (**Size**), and set how much of the screen's **Width** it spans. **Center it** puts it back in the middle. |
-| **Song title** | Where the album art, song and artist appear on the wallpaper: any corner, top or bottom center, or hidden. |
+| **Song title** | Where the song card (album art, song and artist) appears on the wallpaper: any corner, top or bottom center, or hidden. When it's hidden, *show it in the bottom right for a few seconds when a new song starts* (on by default) still announces each new song. |
+| **Album art** | *Show the album cover in the middle*. The cover always stays in the center of the screen; the position sliders move only the visualizer. Radial and Ring size it to fit their circle; the other styles show it behind the visualizer, bouncing with the beat and the glow. When it's on you also get **Cover size**, where to write the **song and artist** (below, above, left or right of the cover, or hidden), and *Hide the song title card*. |
 | **Intensity** | From *Calm* to *Wild*: how strongly it reacts to the music. Turn it up for quiet music. |
 | **Sensitivity by frequency** | Four sliders that make parts of the sound move it more or less (see below). **Even out** resets them. |
 | **Background** | The glow that pulses with the bass (on/off and strength), and a **picture behind the visualizer**: choose a file, or **Use my current wallpaper**. **Darken picture** helps the visualizer stand out. The picture is copied into the app's settings folder, so moving the original doesn't break it. |

@@ -184,6 +184,26 @@
                                    Text="Where the album art, song and artist appear on the wallpaper."/>
                         <!-- Position buttons are created in code, one per TitlePosition. -->
                         <WrapPanel x:Name="TitleButtons"/>
+                        <CheckBox x:Name="PeekBox" Margin="0,8,0,0" Checked="OnAlbumChanged" Unchecked="OnAlbumChanged"
+                                  Content="When hidden, show it in the bottom right for a few seconds when a new song starts"/>
+
+                        <TextBlock Text="ALBUM ART" Style="{StaticResource Section}"/>
+                        <CheckBox x:Name="AlbumBox" Content="Show the album cover in the middle" Checked="OnAlbumChanged" Unchecked="OnAlbumChanged"/>
+                        <TextBlock Style="{StaticResource Hint}"
+                                   Text="It stays in the center of the screen; the position sliders move only the visualizer. Radial and Ring size it to fit their circle. The other styles show it behind the visualizer, bouncing with the beat and the glow."/>
+                        <!-- Shown only while the cover is on. -->
+                        <StackPanel x:Name="AlbumOptions" Margin="0,12,0,0">
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Cover size" Style="{StaticResource Label}"/>
+                                <Slider x:Name="AlbumSizeSlider" Grid.Column="1" Minimum="0.12" Maximum="0.6" ValueChanged="OnSliderChanged"
+                                        ToolTip="For the styles without a circle; Radial and Ring size it to fit the circle"/>
+                            </Grid>
+                            <TextBlock Text="Song and artist" Style="{StaticResource Label}" Margin="0,0,0,8"/>
+                            <!-- Caption position buttons are created in code (Below, Above, Left, Right, Hidden). -->
+                            <WrapPanel x:Name="CaptionButtons" Margin="0,0,0,8"/>
+                            <CheckBox x:Name="HideCardBox" Content="Hide the song title card (the cover already shows what's playing)" Checked="OnAlbumChanged" Unchecked="OnAlbumChanged"/>
+                        </StackPanel>
 
                         <TextBlock Text="INTENSITY" Style="{StaticResource Section}"/>
                         <Grid>

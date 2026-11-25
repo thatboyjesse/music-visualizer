@@ -16,7 +16,7 @@
     <ApplicationIcon>..\Assets\app.ico</ApplicationIcon>
     <!-- asInvoker: without a manifest, Windows guesses that an exe named "*Setup*" needs admin. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.3.1</Version>
+    <Version>1.3.3</Version>
     <Product>Music Visualizer Setup</Product>
     <DebugType>none</DebugType>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>

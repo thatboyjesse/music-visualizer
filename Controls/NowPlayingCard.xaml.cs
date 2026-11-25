@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using MusicVisualizer.NowPlaying;
 
@@ -14,10 +15,17 @@ public partial class NowPlayingCard : UserControl
     private ImageSource? _shownArt;
     private bool _hidden;
 
+    // "Peek": while the card is hidden, a new song shows it in the bottom-right for a few seconds.
+    private bool _peekOnNewSong;
+    private bool _peeking;
+    private string? _songKey;
+    private readonly DispatcherTimer _peekTimer = new() { Interval = TimeSpan.FromSeconds(6) };
+
     public NowPlayingCard()
     {
         InitializeComponent();
         _tick.Tick += (_, _) => UpdateProgress();
+        _peekTimer.Tick += (_, _) => EndPeek();
         Unloaded += (_, _) => Unbind();
     }
 
@@ -37,15 +45,44 @@ public partial class NowPlayingCard : UserControl
     /// Places the card in a corner or edge of its parent (the wallpaper uses this for the
     /// "Song title" setting). Bottom positions leave room for the taskbar.
     /// </summary>
-    public void Place(Settings.TitlePosition position)
+    /// <param name="peekOnNewSong">While hidden, briefly show the card in the bottom-right when a new song starts.</param>
+    public void Place(Settings.TitlePosition position, bool peekOnNewSong = false)
     {
         _hidden = position == Settings.TitlePosition.Hidden;
+        _peekOnNewSong = peekOnNewSong;
+        if (!_hidden && _peeking) StopPeek();
+        if (_hidden) position = Settings.TitlePosition.BottomRight; // where a peek appears
         string p = position.ToString();
         VerticalAlignment = p.StartsWith("Top") ? VerticalAlignment.Top : VerticalAlignment.Bottom;
         HorizontalAlignment = p.EndsWith("Left") ? HorizontalAlignment.Left
                             : p.EndsWith("Center") ? HorizontalAlignment.Center
                             : HorizontalAlignment.Right;
         Margin = VerticalAlignment == VerticalAlignment.Top ? new Thickness(56, 56, 56, 0) : new Thickness(56, 0, 56, 88);
+        Refresh();
+    }
+
+    private void StartPeek()
+    {
+        _peeking = true;
+        BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.4)));
+        _peekTimer.Stop();
+        _peekTimer.Start();
+    }
+
+    private void EndPeek()
+    {
+        _peekTimer.Stop();
+        var fade = new DoubleAnimation(0, TimeSpan.FromSeconds(0.6));
+        fade.Completed += (_, _) => { if (_peeking) StopPeek(); };
+        BeginAnimation(OpacityProperty, fade);
+    }
+
+    private void StopPeek()
+    {
+        _peeking = false;
+        _peekTimer.Stop();
+        BeginAnimation(OpacityProperty, null);
+        Opacity = 1;
         Refresh();
     }
 
@@ -70,7 +107,16 @@ public partial class NowPlayingCard : UserControl
     private void Refresh()
     {
         var t = _service?.Current;
-        Visibility = t is null || _hidden ? Visibility.Collapsed : Visibility.Visible;
+
+        // A different song (not the first one seen) while hidden: peek.
+        string? key = t is null ? null : $"{t.Title}|{t.Artist}";
+        if (key is not null && key != _songKey)
+        {
+            if (_songKey is not null && _hidden && _peekOnNewSong) StartPeek();
+            _songKey = key;
+        }
+
+        Visibility = t is null || (_hidden && !_peeking) ? Visibility.Collapsed : Visibility.Visible;
         if (t is null) return;
 
         TitleText.Text = t.Title;

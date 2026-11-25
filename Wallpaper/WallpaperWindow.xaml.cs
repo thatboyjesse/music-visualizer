@@ -23,9 +23,10 @@ public partial class WallpaperWindow : Window
     {
         InitializeComponent();
         Viz.Attach(engine);
+        Viz.Bind(nowPlaying);
         Viz.Mode = mode;
         Viz.Look = look;
-        Card.Place(look.Title);
+        Card.Place(look.Title, look.PeekCard);
         Card.ShowControls = false; // the wallpaper can't receive clicks
         Card.Scale = 1.25;
         Card.Bind(nowPlaying);
@@ -38,7 +39,7 @@ public partial class WallpaperWindow : Window
         set
         {
             Viz.Look = value;
-            Card.Place(value.Title);
+            Card.Place(value.Title, value.PeekCard);
         }
     }
 

@@ -47,6 +47,27 @@ public sealed class VisualizerCanvas : FrameworkElement
     /// <summary>Stops analysing and redrawing (window minimised, or the wallpaper is showing instead).</summary>
     public bool IsPaused { get; set; }
 
+    // The track shown by the "album art in the middle" option.
+    private ImageSource? _art;
+    private string? _title, _artist;
+    private FormattedText? _titleText, _artistText;
+    private string? _captionKey;
+
+    /// <summary>Follows a now-playing service so the centred cover and caption show the current song.</summary>
+    public void Bind(NowPlayingService service)
+    {
+        void Update(object? sender, EventArgs e)
+        {
+            var t = service.Current;
+            _art = t?.Art;
+            _title = t?.Title;
+            _artist = t?.Artist;
+        }
+        service.Changed += Update;
+        Unloaded += (_, _) => service.Changed -= Update;
+        Update(null, EventArgs.Empty);
+    }
+
     public VisualizerCanvas()
     {
         _background = Frozen(new SolidColorBrush(Color.FromRgb(0x0B, 0x0B, 0x12)));
@@ -171,6 +192,25 @@ public sealed class VisualizerCanvas : FrameworkElement
             dc.Pop();
         }
 
+        // Album art: always at the centre of the screen; only the visualizer moves with the position
+        // sliders. Round styles size it to their circle; the others draw it behind the visualizer,
+        // bouncing with the same bass pulse as the glow.
+        bool round = Mode is VisualMode.Radial or VisualMode.Ring;
+        bool art = Look.AlbumArt && _art is not null;
+        var mid = new Point(w / 2, h / 2);
+        double coverSize = 0, captionDistance = 0;
+        if (art && !round)
+        {
+            double pulse = _analyzer.Bass * _analyzer.Bass;
+            double side = Math.Clamp(Look.AlbumSize, 0.08, 0.8) * h * (1 + pulse * 0.12);
+            var rect = new Rect(mid.X - side / 2, mid.Y - side / 2, side, side);
+            dc.PushClip(new RectangleGeometry(rect, side * 0.06, side * 0.06));
+            dc.DrawImage(_art, rect);
+            dc.Pop();
+            coverSize = side;
+            captionDistance = side / 2 + side * 0.06;
+        }
+
         switch (Mode)
         {
             case VisualMode.Bars: DrawBars(dc, w, h, center); break;
@@ -181,7 +221,76 @@ public sealed class VisualizerCanvas : FrameworkElement
             case VisualMode.Spectrum: DrawSpectrum(dc, w, h, center); break;
             case VisualMode.Ring: DrawRing(dc, w, h, center); break;
         }
+
+        if (art && round)
+        {
+            double size = Math.Min(w, h) * Look.Size;
+            double radius = Mode == VisualMode.Radial
+                ? size * 0.17 * (1 + _analyzer.Bass * _analyzer.Bass * 0.35) - 12 // fits inside the ring line
+                : size * 0.22 * (1 + _analyzer.Bass * _analyzer.Bass * 0.25) * 0.72;  // fits inside the waveform
+            radius = Math.Max(4, radius);
+            dc.PushClip(new EllipseGeometry(mid, radius, radius));
+            dc.DrawImage(_art, new Rect(mid.X - radius, mid.Y - radius, radius * 2, radius * 2));
+            dc.Pop();
+            coverSize = radius * 2;
+            // Clear the spokes / waveform when the circle is around the cover; otherwise just the cover's edge.
+            bool circleAroundCover = (center - mid).Length < radius;
+            captionDistance = circleAroundCover ? Math.Max(radius + 10, size * 0.35) : radius + 10;
+        }
+
+        if (art && Look.AlbumCaption) DrawCaption(dc, mid, captionDistance, coverSize);
     }
+
+    /// <summary>Song title and artist, centred under the cover, with a soft shadow so they read on any background.</summary>
+    /// <param name="cover">Centre of the cover.</param>
+    /// <param name="distance">How far from the centre the text starts, in the chosen direction.</param>
+    private void DrawCaption(DrawingContext dc, Point cover, double distance, double coverSize)
+    {
+        if (string.IsNullOrEmpty(_title)) return;
+        double fontSize = Math.Clamp(coverSize * 0.085, 12, 30);
+        string key = $"{_title}|{_artist}|{fontSize:0}";
+        if (key != _captionKey)
+        {
+            _captionKey = key;
+            double dip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            var face = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+            _titleText = new FormattedText(_title, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                face, fontSize, Brushes.White, dip) { MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis, MaxTextWidth = Math.Max(200, coverSize * 2) };
+            _artistText = string.IsNullOrEmpty(_artist) ? null : new FormattedText(_artist, System.Globalization.CultureInfo.CurrentUICulture,
+                FlowDirection.LeftToRight, new Typeface("Segoe UI"), fontSize * 0.72, Brushes.White, dip)
+                { MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis, MaxTextWidth = Math.Max(200, coverSize * 2) };
+        }
+
+        if (_titleText is null) return;
+        double gap = 2;
+        double blockH = _titleText.Height + (_artistText is null ? 0 : gap + _artistText.Height);
+
+        // x is the anchor; align says which edge of each line sits on it (0 = left, 0.5 = centre, 1 = right).
+        (double x, double top, double align) = Look.CaptionPlace switch
+        {
+            CaptionPlace.Above => (cover.X, cover.Y - distance - blockH, 0.5),
+            CaptionPlace.Left => (cover.X - distance - 8, cover.Y - blockH / 2, 1.0),
+            CaptionPlace.Right => (cover.X + distance + 8, cover.Y - blockH / 2, 0.0),
+            _ => (cover.X, cover.Y + distance, 0.5),
+        };
+        DrawShadowed(dc, _titleText, x, top, align, 1.0);
+        if (_artistText is not null) DrawShadowed(dc, _artistText, x, top + _titleText.Height + gap, align, 0.75);
+    }
+
+    /// <summary>Draws text with a dark drop shadow; <paramref name="align"/> 0 = starts at x, 0.5 = centred, 1 = ends at x.</summary>
+    private static void DrawShadowed(DrawingContext dc, FormattedText text, double x, double top, double align, double opacity)
+    {
+        var at = new Point(x - text.Width * align, top);
+        text.SetForegroundBrush(Brushes.Black);
+        dc.PushOpacity(0.55 * opacity);
+        dc.DrawText(text, new Point(at.X + 1.5, at.Y + 1.5));
+        dc.Pop();
+        text.SetForegroundBrush(Brushes.White);
+        dc.PushOpacity(opacity);
+        dc.DrawText(text, at);
+        dc.Pop();
+    }
+
 
     private void DrawBackground(DrawingContext dc, double w, double h)
     {
