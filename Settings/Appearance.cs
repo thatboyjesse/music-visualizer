@@ -88,6 +88,8 @@ public sealed class Appearance
 
     public Appearance Clone() => (Appearance)MemberwiseClone();
 
+    public string ToJson() => System.Text.Json.JsonSerializer.Serialize(this, AppSettings.Json);
+
     /// <summary>
     /// Copies the settings that belong to the wallpaper rather than to a style (frame rate, background
     /// picture, song-title card), so switching style keeps them. Everything else is per style.

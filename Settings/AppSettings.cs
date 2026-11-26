@@ -111,7 +111,9 @@ public sealed class AppSettings
         }
     }
 
-    private static readonly JsonSerializerOptions Json = new()
+    public string ToJson() => JsonSerializer.Serialize(this, Json);
+
+    internal static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
         Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },

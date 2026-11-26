@@ -29,7 +29,8 @@ namespace MusicVisualizer.Setup
     /// <summary>
     /// The actual install. Per-user only (no admin): files go to %LocalAppData%\Programs\Music Visualizer,
     /// with a Start-menu shortcut, an optional desktop shortcut and startup entry, and an
-    /// "Apps" entry whose uninstall command is "MusicVisualizer.exe --uninstall".
+    /// "Apps" entry whose uninstall command is "MusicVisualizer.exe --uninstall". The payload holds the
+    /// engine (MusicVisualizer.exe, Rust) and the settings app (MusicVisualizerSettings.exe and the .NET runtime).
     /// </summary>
     public static class Installer
     {
@@ -206,8 +207,28 @@ namespace MusicVisualizer.Setup
                 }
             }
 
-            string target = Path.Combine(dir, InstallInfo.ExeName);
-            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(InstallInfo.ExeName)))
+            // The settings window (2.0+), if open.
+            EventWaitHandle helperQuit;
+            if (EventWaitHandle.TryOpenExisting(InstallInfo.HelperQuitEvent, out helperQuit))
+            {
+                using (helperQuit) helperQuit.Set();
+                for (int i = 0; i < 30; i++)
+                {
+                    Mutex m;
+                    if (!Mutex.TryOpenExisting(InstallInfo.HelperMutex, out m)) break;
+                    m.Dispose();
+                    Thread.Sleep(100);
+                }
+            }
+
+            foreach (string exeName in new[] { InstallInfo.ExeName, InstallInfo.SettingsExeName })
+                KillCopies(Path.Combine(dir, exeName));
+        }
+
+        /// <summary>Force-closes processes running this exact file (a copy that didn't respond to Quit).</summary>
+        private static void KillCopies(string target)
+        {
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(target)))
             {
                 try
                 {

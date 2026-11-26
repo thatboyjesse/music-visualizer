@@ -11,7 +11,11 @@ namespace MusicVisualizer.Shared
     public static class InstallInfo
     {
         public const string AppName = "Music Visualizer";
+        /// <summary>The engine (Rust): wallpaper, audio, tray. What shortcuts, the startup entry and the Apps entry run.</summary>
         public const string ExeName = "MusicVisualizer.exe";
+
+        /// <summary>The settings window and visualizer window (this C# app), started by the engine only while they're open.</summary>
+        public const string SettingsExeName = "MusicVisualizerSettings.exe";
 
         /// <summary>Add/remove programs entry (per user).</summary>
         public const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\MusicVisualizer";
@@ -28,10 +32,19 @@ namespace MusicVisualizer.Shared
         public const string ShowEvent = @"Local\MusicVisualizer.Show";
         public const string QuitEvent = @"Local\MusicVisualizer.Quit";
         public const string WallpaperEvent = @"Local\MusicVisualizer.Wallpaper";
+        /// <summary>The settings window's Stop button: the engine turns everything off but stays in the tray.</summary>
+        public const string StopEvent = @"Local\MusicVisualizer.Stop";
+
+        // The settings app (MusicVisualizerSettings.exe): one copy, and signals from the engine.
+        public const string HelperMutex = @"Local\MusicVisualizer.Helper";
+        public const string HelperSettingsEvent = @"Local\MusicVisualizer.Helper.Settings";
+        public const string HelperVisualizerEvent = @"Local\MusicVisualizer.Helper.Visualizer";
+        public const string HelperQuitEvent = @"Local\MusicVisualizer.Helper.Quit";
 
         // Command-line switches.
         public const string BackgroundArg = "--background";
         public const string SettingsArg = "--settings";
+        public const string VisualizerArg = "--visualizer";
         public const string UninstallArg = "--uninstall";
         public const string QuietArg = "--quiet";
 

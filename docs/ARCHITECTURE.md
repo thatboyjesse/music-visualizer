@@ -2,7 +2,27 @@
 
 How Music Visualizer works, from sound to pixels. It's meant for anyone changing the code. User docs are in the [README](../README.md).
 
-## Big picture
+## Two programs: the engine and the settings app
+
+Since 2.0 the app is two programs installed side by side:
+
+| | `MusicVisualizer.exe`: the **engine** | `MusicVisualizerSettings.exe`: the **settings app** |
+|---|---|---|
+| Language | Rust + Direct2D/DirectWrite/WIC (`native/`) | C# / WPF (the rest of the repo) |
+| Runs | All day | Only while the settings or visualizer window is open |
+| Does | Wallpaper, audio capture, analysis, drawing, now-playing, quiet-time fade, pause when covered, style cycle, tray icon, single instance, startup entry repair | Settings window with its live preview, visualizer window (file playback, fullscreen), uninstall |
+
+They share **`%AppData%\MusicVisualizer\settings.json`** (the schema in `Settings/AppSettings.cs` and `Appearance.cs`), plus a few named events:
+
+- The settings app saves every change (debounced 150 ms). The engine watches the folder (`FindFirstChangeNotification`), re-reads the file 150 ms after a change, and applies only what differs: style and look are read every frame anyway; wallpaper on/off, screen, and what to listen to are acted on. A file identical to what the engine last read or wrote is ignored, so its own writes don't echo.
+- The engine writes only the values it changes itself (the style cycle's `Mode`/`Look`/`Looks`, `WallpaperEnabled` from the tray or when attaching fails, `TrayHintShown`). It patches them into the *latest* file as JSON (`settings::patch`), so everything else stays exactly as the settings app wrote it, and saves the same way C# does (temp file, then `ReplaceFile` keeping `settings.json.bak`).
+- The settings app watches the file too (`FileSystemWatcher`) and reloads when the engine changed it, unless its own change is waiting to be saved (then its save wins).
+- Opening a window: the engine sets `Local\MusicVisualizer.Helper.Settings` or `.Helper.Visualizer` if the settings app is running, otherwise starts it with `--settings` or `--visualizer`. The settings app is single-instance (`Local\MusicVisualizer.Helper` mutex) and exits when its last window closes.
+- *Stop* in the settings window sets `Local\MusicVisualizer.Stop`; the engine sets `Local\MusicVisualizer.Helper.Quit` when it stops or exits, so the windows close too.
+
+`AppController.HelperMode` decides which role the C# app plays: it's the settings app when `MusicVisualizer.exe` sits next to it and it isn't that exe itself. Otherwise (a dev build, `dotnet run`, the `-Portable` exe) it is the complete C#-only app from before 2.0, with its own wallpaper, tray and cycle. The rest of this document describes that C# code; the engine is a port of it, and [The engine](#the-engine-native) lists how each piece maps.
+
+## Big picture (C# code; the engine follows the same pipeline)
 
 ```
             ┌──────────────── audio ────────────────┐
@@ -63,7 +83,41 @@ Everything runs in one process. The UI thread owns rendering, now-playing pollin
 | `app.manifest` | Declares Windows 8/10 support, which layered child windows (the wallpaper) need. |
 | `build.ps1` | Publishes the app folder, zips it, then builds the installer around the zip. |
 | `scripts/make-icon.ps1` | Generates `Assets/app.ico`. |
-| `native/` | Experimental Rust + Direct2D prototype of the wallpaper engine, used to measure what a native port would save. Not part of the app. See `native/README.md`. |
+| `native/` | The engine, `MusicVisualizer.exe` (Rust). See [The engine](#the-engine-native) and `native/README.md`. |
+| `native/src/main.rs` | Entry point, switches, single instance, named events, the main loop, settings reload, wallpaper lifecycle (attach, retries, Explorer restarts, screens), quiet-time fade, pause when covered, style cycle, song-card peek. |
+| `native/src/settings.rs` | Reads `settings.json` (same schema, same defaults); `patch` writes single values into the latest file; `switch_mode` is `AppController.SetMode`. |
+| `native/src/audio.rs` | WASAPI loopback (follows the default device) and per-app process loopback, sample rings, seconds since sound. |
+| `native/src/analysis.rs` | `SpectrumAnalyzer` ported: FFT (`rustfft`), bands, tilt, EQ, intensity, smoothing, peaks, bass. |
+| `native/src/render.rs` | Direct2D drawing: the seven styles, colours, glow, background picture, cover, caption, song card, desktop fade. |
+| `native/src/wallpaper.rs` | `DesktopWallpaper`, `Screens` and `Occlusion` ported, plus the desktop background's colour and fit. |
+| `native/src/nowplaying.rs` | Media session polling on its own thread (WinRT through the `windows` crate). |
+| `native/src/imaging.rs` | WIC picture decoding and `ImageUtil.Palette` (album colours) ported. |
+| `native/src/tray.rs` | Tray icon and menu on their own thread; forwards `TaskbarCreated` and display changes. |
+| `native/src/sys.rs` | Named events, registry (startup entry repair), message boxes, error log. |
+| `native/build.rs` | Embeds the icon, manifest and version info (writes the COFF resource object itself; the GNU toolchain has no resource compiler). |
+| `native/app.manifest` | Windows 8/10 support (layered child windows), per-monitor DPI, common controls 6. |
+
+## The engine (`native/`)
+
+A port of the C# wallpaper pipeline, checked style by style against 1.6.0 with screenshots (same song, same settings: the drawings match). How each C# piece maps:
+
+| C# | Engine | Differences |
+|---|---|---|
+| `App`, `AppController` | `main.rs` (`App`) | Same switches, mutex and events (`Shared/InstallInfo.cs` names). `--uninstall` is handed to `MusicVisualizerSettings.exe`, which does the work. |
+| `AudioEngine`, `ProcessAudioCapture`, `AudioApps.RootProcessIds` | `audio.rs` | Captures are read on the main thread once per frame (4× a second while paused) instead of on capture threads, so no locks. All-audio capture follows the default output device (checked every 2 s) and restarts if the device goes away. Per-app: processes are listed with a Toolhelp snapshot every 2 s while nothing is captured, every 10 s once something is. `ActivateAudioInterfaceAsync` completes into an event that's checked on the next poll. |
+| `SpectrumAnalyzer` | `analysis.rs` | Same maths; rustfft is unnormalised, so power is divided by N² to match NAudio. |
+| `VisualizerCanvas` | `render.rs` | Direct2D `HwndRenderTarget`. DIPs like WPF: the target's DPI is the monitor's (the engine is per-monitor DPI aware). Palette brushes are created once and recoloured with `SetColor`; faded copies are separate brushes (no layers); gradients are cached by colour and only moved; the glow is one radial gradient brush; the cover is a bitmap brush filling a rounded rect or ellipse. |
+| `NowPlayingCard` (wallpaper use) | `render.rs` `draw_card` | Drawn, not a control: same sizes (×1.25), margins, text, progress line and peek fade. |
+| `WallpaperWindow` | `main.rs` + `wallpaper.rs` | A plain Win32 window keeps `WS_EX_LAYERED`, so none of the WPF workarounds are needed (only the Win8+ manifest entries). The quiet-time desktop copy is drawn on top with the same 1.2 s / 0.4 s fades. |
+| `MediaSessionProvider`, `NowPlayingService`, `ImageUtil` | `nowplaying.rs`, `imaging.rs` | A thread polls every 2 s (6 s while nothing is drawn), decodes the cover with WIC at 300 px and works out its colours, then wakes the main thread. |
+| `TrayIcon` | `tray.rs` | `Shell_NotifyIcon` and a `TrackPopupMenu` on their own thread, so the menu never stalls drawing. Dark menus through uxtheme's `SetPreferredAppMode`. |
+| `Memory.Trim` | `sys::trim_memory` + `Renderer::release` | After 30 s without drawing, the Direct2D resources are dropped and the working set trimmed. |
+
+**Main loop.** One thread waits on a high-resolution waitable timer, the named events, the tray/now-playing wake-up event and the settings folder change notification (`MsgWaitForMultipleObjects`, so window messages are pumped too). The timer is set to the next deadline: the next frame (at the *Frame rate* setting) while drawing, else the next 250 ms tick. A tick checks *pause when covered* (once a second), the quiet-time fade, memory trimming and the time-based style cycle, and reads audio while nothing is drawn so it notices the music coming back.
+
+**Threads:** main (everything above), tray, now-playing, plus Windows' own audio and composition threads.
+
+**Testing hook:** with the environment variable `MV_DEBUG_LOG=<file>`, the engine appends its state every 2 s (drawing or paused, covered, idle, seconds since sound, style, track, time spent in the occlusion check and in paused audio reads).
 
 ## App lifecycle: tray, single instance, background
 
@@ -201,7 +255,7 @@ The switch is meant to be invisible. Going idle, the window fades in `Desk`, a c
 
 `MoveTo` also re-asserts the z-order below `SHELLDLL_DefView`. Don't call `RestoreStaticWallpaper()` while the wallpaper is running: re-applying the wallpaper makes Explorer raise its `WorkerW` above our window on 24H2+, which hides the visualizer. The screen that was left repaints by itself.
 
-The app is system-DPI aware (WPF's default). Monitors with different scaling may get a slightly blurry or mis-sized wallpaper; this is untested.
+The C# app is system-DPI aware (WPF's default). The engine is per-monitor DPI aware and draws in DIPs at the wallpaper screen's scale, so sizes match the C# app on the main screen and stay sharp on others; screens with different scaling are still untested.
 
 ### Why 24H2+ needed three extra fixes
 
@@ -225,11 +279,34 @@ On 24H2+, Progman composes its children with DirectComposition and **only draws 
 The quickest checks:
 
 - List Progman's children with `EnumChildWindows`. `Music Visualizer Wallpaper` should sit between `SHELLDLL_DefView` and `WorkerW`, with ex-style `0x80000` on 24H2+.
-- Take a screenshot with every window minimized (`Shell.Application.MinimizeAll()`).
+- Take a screenshot with every window minimized (`Shell.Application.MinimizeAll()`). Capture the whole virtual screen (the wallpaper may be on another monitor) with `BitBlt(... SRCCOPY | CAPTUREBLT)`: without `CAPTUREBLT`, layered windows (ours and the icon layer) are missing. `PrintWindow(hwnd, PW_RENDERFULLCONTENT)` captures the wallpaper window's own content without touching other windows.
 
 If the window sits in the right place but the screen shows only the plain wallpaper, the layered flag is missing.
 
 ## Memory and CPU
+
+Measured on the development PC (i7-10510U, Windows 11 build 26200, wallpaper on a 1366×768 screen), 30 fps, music playing from Spotify with *Only the apps I choose*. CPU is the share of one core over 15 s; memory is working set / private. "Full" is the default look with the album cover in the middle and its caption, the song card and song-art colours; "plain" is 96 bars, rainbow colours, no glow, cover or card.
+
+| Style | 2.0 engine, full | 1.6.0 C#, full | 2.0 engine, plain | 1.6.0 C#, plain |
+|---|---|---|---|---|
+| Bars | 5.4% · 49 / 22 MB | 13.1% · 158 / 73 MB | 5.4% · 44 / 19 MB | 9.8% · 139 / 62 MB |
+| Mirror | 6.2% · 49 / 22 MB | 13.6% · 157 / 72 MB | 4.5% · 44 / 19 MB | 10.7% · 138 / 61 MB |
+| Blocks | 5.3% · 50 / 23 MB | 26.3% · 159 / 74 MB | 7.9% · 45 / 19 MB | 25.9% · 144 / 65 MB |
+| Spectrum | 7.4% · 53 / 26 MB | 22.3% · 161 / 75 MB | 7.0% · 50 / 24 MB | 18.4% · 149 / 71 MB |
+| Radial | 5.7% · 53 / 26 MB | 21.9% · 161 / 76 MB | 6.0% · 49 / 23 MB | 18.8% · 139 / 61 MB |
+| Ring | 6.9% · 56 / 28 MB | 15.6% · 159 / 75 MB | 5.5% · 51 / 25 MB | 23.5% · 142 / 64 MB |
+| Wave | 7.1% · 57 / 29 MB | 28.0% · 171 / 86 MB | 4.6% · 52 / 26 MB | 39.7% · 186 / 93 MB |
+
+Roughly 2–5× less CPU and 3× less memory. Single 15 s samples vary by a point or two with the music. Other cases:
+
+- **Covered or quiet (nothing drawn):** about 0.5% of one core, 50 / 25 MB, less after the 30 s trim. (Before tuning it was 2%: listing every process every 2 s for per-app capture, and polling now-playing every 2 s.)
+- **4K background picture:** decoded only as large as the screen needs and dropped from memory once uploaded: 61 / 34 MB (keeping a 3840-px decode cost 92 MB private).
+- **Your own look at 60 fps** (Wave, cover, glow): about 12%.
+- **Settings window open:** the settings app adds about 160 / 76 MB while open (its live preview captures audio too), nothing once closed.
+
+The engine is 1.7 MB; the settings app and its .NET runtime are about 185 MB on disk but use no memory when closed.
+
+The rest of this section is about the C# code (the settings app, or the whole app when run on its own):
 
 - **Pause when covered:** once a second `AppController.CheckIdle` asks `Occlusion.IsCovered` whether a visible, non-minimized, non-cloaked app window covers at least 90% of the wallpaper's screen (a maximized window covers all but the taskbar). Shell windows, our own windows and tool/click-through/no-activate overlays are ignored. While covered the wallpaper stops drawing (`WallpaperWindow.Covered`).
 - **Giving memory back:** after 30 s of not drawing (covered or quiet, with no window open), after *Stop*, and when the settings window closes, `Memory.Trim()` runs a compacting GC and `SetProcessWorkingSetSize(-1, -1)`, so Windows can reclaim the pages until drawing resumes.
@@ -241,13 +318,14 @@ Setup records every file it installs in `install-files.txt`; updates delete file
 
 ## Build and release
 
-`build.ps1` does three steps:
+`build.ps1` does four steps:
 
-1. `dotnet publish -r win-x64 --self-contained -o publish\app`: a normal folder (about 470 files, 185 MB) with the .NET runtime, WPF and native libraries included, so users don't need .NET installed. A folder rather than a single file, for memory (see [Memory](#memory)).
-2. Zip that folder to `obj\payload.zip` (about 73 MB).
-3. `dotnet build Setup\Setup.csproj -p:PayloadPath=obj\payload.zip`, which embeds the zip as the resource `payload.zip`, then copies the result to `dist\MusicVisualizer-Setup-<version>.exe`.
+1. `dotnet publish -r win-x64 --self-contained -o publish\app`: the settings app (`MusicVisualizerSettings.exe`) as a normal folder (about 470 files, 185 MB) with the .NET runtime, WPF and native libraries included, so users don't need .NET installed. A folder rather than a single file, for memory (see [Memory and CPU](#memory-and-cpu)).
+2. `cargo build --release` in `native\` (with `MV_VERSION` set, which `build.rs` puts in the exe's version info) and copy `MusicVisualizer.exe` into that folder.
+3. Zip that folder to `obj\payload.zip` (about 73 MB).
+4. `dotnet build Setup\Setup.csproj -p:PayloadPath=obj\payload.zip`, which embeds the zip as the resource `payload.zip`, then copies the result to `dist\MusicVisualizer-Setup-<version>.exe`.
 
-`-Portable` also publishes an uncompressed single-file `publish\MusicVisualizer.exe` for running without installing. Uncompressed because compression saves disk space but costs about 100 MB of memory at run time.
+`-Portable` also publishes an uncompressed single-file `publish\MusicVisualizer.exe` (the C#-only app, no engine) for running without installing. Uncompressed because compression saves disk space but costs about 100 MB of memory at run time.
 
 ## Installer
 
@@ -257,7 +335,7 @@ Setup records every file it installs in `install-files.txt`; updates delete file
 - **Manifest:** `Setup/app.manifest` requests `asInvoker`. Without it, Windows' installer detection sees "Setup" in the file name and asks for admin rights.
 - **Per user, no admin:** default folder `%LocalAppData%\Programs\Music Visualizer`.
 - **Steps (`Installer.Install`):**
-  1. Ask a running copy to quit through the quit event, wait for its mutex to disappear, and kill it if it's still running from the install folder.
+  1. Ask a running copy to quit through the quit event and wait for its mutex to disappear; do the same for the settings app (`Helper.Quit` event, `Helper` mutex); then kill either exe if it's still running from the install folder. Updating from 1.x replaces the C# `MusicVisualizer.exe` with the engine and removes the old C# files through the file list.
   2. If the 1.0.0 Inno Setup install is present (its `{8F3C…}_is1` uninstall key), run its uninstaller silently.
   3. Extract `payload.zip` into the install folder (`ExtractPayload`), retrying each file while the old version's copy is still locked, and refusing any entry whose path would land outside the folder. Files the previous version listed in `install-files.txt` but this one doesn't have are deleted, then the new list is written.
   4. Start-menu shortcuts **Music Visualizer** (no arguments: runs the wallpaper) and **Music Visualizer Settings** (`--settings`), and optionally a desktop shortcut (`WScript.Shell`).
@@ -269,8 +347,9 @@ Setup records every file it installs in `install-files.txt`; updates delete file
 
 ## Extending
 
-- **New visual style:** add a value to the end of `VisualMode`, a `DrawXxx` method and a `case` in `VisualizerCanvas.OnRender`, and an entry in `SettingsWindow.Modes` (with a tooltip). The visualizer window's *Style* button and number keys pick it up from the enum.
+- **New visual style:** add a value to the end of `VisualMode`, a `DrawXxx` method and a `case` in `VisualizerCanvas.OnRender`, and an entry in `SettingsWindow.Modes` (with a tooltip). The visualizer window's *Style* button and number keys pick it up from the enum. Then the engine: a `Mode` variant (same name, same position) in `native/src/settings.rs` and a `draw_xxx` in `render.rs`.
+- **New appearance option or setting the wallpaper uses:** as below for C#, then add the field (PascalCase JSON name, same default) to `Appearance` or `Settings` in `native/src/settings.rs` and use it in `render.rs` or `main.rs`. The engine picks up changes from the file; nothing else is needed for it to follow the settings window.
 - **New now-playing source:** implement `INowPlayingProvider` and add it to the order in `NowPlayingService.PollAsync`.
-- **Wallpaper on all screens at once:** create one `WallpaperWindow` per entry in `Screens.All()` and attach each with its own bounds.
+- **Wallpaper on all screens at once:** in the engine, one `Wall` (window + renderer) per entry in `wallpaper::screens()`, each attached with its own bounds.
 - **New setting:** add a property to `AppSettings`, a setter on `AppController` that saves and raises `Changed`, and a control in `SettingsWindow` (update it in `Sync()`).
 - **New appearance option:** add it to `Appearance`, use it in `VisualizerCanvas`, and add a control on the Appearance tab (read in `SyncLook()`, written in the matching handler, which calls `SetAppearance`).

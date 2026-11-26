@@ -30,11 +30,31 @@ public enum LaunchMode
 /// </summary>
 public sealed class AppController : IDisposable
 {
-    private readonly TrayIcon _tray = new();
+    /// <summary>
+    /// True when this is the settings helper (MusicVisualizerSettings.exe next to the Rust engine,
+    /// MusicVisualizer.exe): no tray, no wallpaper and no style cycle here, the engine does those.
+    /// Settings are shared through settings.json (the engine reloads it when it changes, and this
+    /// app reloads it when the engine changes it). Windows close → the helper exits.
+    /// </summary>
+    public static bool HelperMode { get; } = DetectHelperMode();
+
+    /// <summary>The engine exe next to this one, in helper mode.</summary>
+    public static string? EngineExe => HelperMode ? Path.Combine(AppContext.BaseDirectory, Shared.InstallInfo.ExeName) : null;
+
+    private static bool DetectHelperMode()
+    {
+        string self = Path.GetFileName(Environment.ProcessPath ?? "");
+        return !self.Equals(Shared.InstallInfo.ExeName, StringComparison.OrdinalIgnoreCase)
+               && File.Exists(Path.Combine(AppContext.BaseDirectory, Shared.InstallInfo.ExeName));
+    }
+
+    private readonly TrayIcon? _tray = HelperMode ? null : new();
     private readonly DispatcherTimer _reattachTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
-    private readonly HwndSource _shellWatcher;
+    private readonly HwndSource? _shellWatcher;
+    private FileSystemWatcher? _settingsWatcher;
+    private readonly DispatcherTimer _reloadTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private readonly int _taskbarCreatedMsg = RegisterWindowMessage("TaskbarCreated");
     private int _reattachAttempts;
 
@@ -45,7 +65,7 @@ public sealed class AppController : IDisposable
     private SettingsWindow? _settingsWindow;
     private bool _disposed;
 
-    public AppSettings Settings { get; } = AppSettings.Load();
+    public AppSettings Settings { get; private set; } = AppSettings.Load();
     public AudioEngine Engine { get; } = new();
     public NowPlayingService NowPlaying { get; } = new();
 
@@ -60,17 +80,22 @@ public sealed class AppController : IDisposable
 
     public AppController()
     {
-        _tray.SettingsRequested += (_, _) => ShowSettings();
-        _tray.VisualizerRequested += (_, _) => ShowVisualizer();
-        _tray.WallpaperToggled += (_, _) => SetWallpaper(!WallpaperRunning, showErrors: true);
-        _tray.StopRequested += (_, _) => Stop();
-        _tray.ExitRequested += (_, _) => Quit();
+        if (_tray is not null)
+        {
+            _tray.SettingsRequested += (_, _) => ShowSettings();
+            _tray.VisualizerRequested += (_, _) => ShowVisualizer();
+            _tray.WallpaperToggled += (_, _) => SetWallpaper(!WallpaperRunning, showErrors: true);
+            _tray.StopRequested += (_, _) => Stop();
+            _tray.ExitRequested += (_, _) => Quit();
+        }
 
         NowPlaying.Changed += (_, _) => { UpdateAudio(); ApplyTheme(); };
         Engine.StateChanged += (_, _) => Dispatcher.BeginInvoke(() => { ApplyTheme(); RaiseChanged(); });
 
         _reattachTimer.Tick += (_, _) => RetryWallpaper();
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Settings.Save(); };
+        if (HelperMode) _saveTimer.Interval = TimeSpan.FromMilliseconds(150); // the wallpaper follows the sliders
+        _reloadTimer.Tick += (_, _) => { _reloadTimer.Stop(); ReloadFromEngine(); };
         _idleTimer.Tick += (_, _) => CheckIdle();
         _idleTimer.Start();
         _cycleTimer.Tick += (_, _) => OnCycleTick();
@@ -79,6 +104,7 @@ public sealed class AppController : IDisposable
 
         // A hidden top-level window, only so we receive the "TaskbarCreated" broadcast
         // that Explorer sends when it restarts (the wallpaper has to be re-attached then).
+        if (HelperMode) return;
         _shellWatcher = new HwndSource(new HwndSourceParameters("Music Visualizer shell watcher")
         {
             WindowStyle = unchecked((int)0x80000000), // WS_POPUP, never shown
@@ -91,7 +117,8 @@ public sealed class AppController : IDisposable
     private static Dispatcher Dispatcher => Application.Current.Dispatcher;
 
     public VisualMode Mode => Enum.TryParse<VisualMode>(Settings.Mode, out var m) ? m : VisualMode.Bars;
-    public bool WallpaperRunning => _wallpaper is not null;
+    /// <summary>In helper mode, whether the engine should be running the wallpaper (it saves this setting).</summary>
+    public bool WallpaperRunning => HelperMode ? Settings.WallpaperEnabled : _wallpaper is not null;
     public ScreenInfo WallpaperScreen => Screens.Find(Settings.WallpaperScreen);
 
     /// <summary>Colours of the latest album cover (used by the "Song art colors" setting).</summary>
@@ -108,6 +135,57 @@ public sealed class AppController : IDisposable
         if (launch == LaunchMode.Settings) ShowSettings();
         else if (launch == LaunchMode.Wallpaper) ShowTrayHintOnce();
         UpdateTray();
+    }
+
+    /// <summary>Settings helper: open the window the engine asked for and follow settings.json.</summary>
+    public void StartHelper(bool visualizer)
+    {
+        // Started on its own (e.g. from Explorer) while the engine isn't running: start it, so changes show.
+        if (!Mutex.TryOpenExisting(Shared.InstallInfo.InstanceMutex, out var engine))
+        {
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(EngineExe!, Shared.InstallInfo.BackgroundArg) { UseShellExecute = false }); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException) { }
+        }
+        else engine.Dispose();
+
+        NowPlaying.Start();
+        Directory.CreateDirectory(AppSettings.Folder);
+        _settingsWatcher = new FileSystemWatcher(AppSettings.Folder, "settings.json")
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
+        };
+        FileSystemEventHandler changed = (_, _) => Dispatcher.BeginInvoke(() => { _reloadTimer.Stop(); _reloadTimer.Start(); });
+        _settingsWatcher.Changed += changed;
+        _settingsWatcher.Created += changed;
+        _settingsWatcher.Renamed += (_, _) => Dispatcher.BeginInvoke(() => { _reloadTimer.Stop(); _reloadTimer.Start(); });
+        _settingsWatcher.EnableRaisingEvents = true;
+
+        if (visualizer) ShowVisualizer(); else ShowSettings();
+    }
+
+    /// <summary>
+    /// The engine changed settings.json (style cycle, wallpaper on/off from the tray, couldn't attach...):
+    /// take its version, unless our own change is about to be saved (that save wins).
+    /// </summary>
+    private void ReloadFromEngine()
+    {
+        if (_saveTimer.IsEnabled) return;
+        var loaded = AppSettings.Load();
+        if (loaded.ToJson() == Settings.ToJson()) return; // our own save
+        bool lookSwitched = loaded.Mode != Settings.Mode || loaded.Look.ToJson() != Settings.Look.ToJson();
+        Settings = loaded;
+        if (lookSwitched)
+        {
+            AppearanceChanged?.Invoke(this, EventArgs.Empty);
+            LookSwitched?.Invoke(this, EventArgs.Empty);
+        }
+        RaiseChanged();
+    }
+
+    /// <summary>Helper mode: exit once no window is open.</summary>
+    private void ExitIfNoWindows()
+    {
+        if (HelperMode && _settingsWindow is null && _visualizer is null) Application.Current.Shutdown();
     }
 
     /// <summary>
@@ -143,6 +221,7 @@ public sealed class AppController : IDisposable
                 UpdateAudio();
                 ShowTrayHintOnce();
                 Memory.Trim(); // drop the preview and window resources
+                ExitIfNoWindows();
             };
             _settingsWindow.Show();
             UpdateAudio();
@@ -161,6 +240,7 @@ public sealed class AppController : IDisposable
                 _visualizer = null;
                 UpdateAudio();
                 ShowTrayHintOnce();
+                ExitIfNoWindows();
             };
             _visualizer.Show();
             UpdateAudio();
@@ -171,7 +251,7 @@ public sealed class AppController : IDisposable
 
     private void ShowTrayHintOnce()
     {
-        if (Settings.TrayHintShown || _disposed) return;
+        if (Settings.TrayHintShown || _disposed || _tray is null) return;
         Settings.TrayHintShown = true;
         Settings.Save();
         _tray.ShowBalloon(WallpaperRunning ? "Music Visualizer is your wallpaper now" : "Music Visualizer is still running",
@@ -197,7 +277,7 @@ public sealed class AppController : IDisposable
         }
         Settings.Mode = mode.ToString();
         Settings.Save();
-        if (!fromCycle) ResetCycle(); // a style picked by hand gets a full turn
+        if (!fromCycle) ResetCycle(); // a style picked by hand gets a full turn (the engine notices the change too)
         if (_wallpaper is not null)
         {
             _wallpaper.Mode = mode;
@@ -242,7 +322,7 @@ public sealed class AppController : IDisposable
     /// <summary>The timer only runs while cycling by time; song counting happens on now-playing changes.</summary>
     private void UpdateCycleTimer()
     {
-        bool run = Settings.CycleEnabled && Settings.CycleBy == CycleBy.Time && CycleList().Count >= 2;
+        bool run = !HelperMode && Settings.CycleEnabled && Settings.CycleBy == CycleBy.Time && CycleList().Count >= 2;
         if (run) _cycleTimer.Start(); else _cycleTimer.Stop();
     }
 
@@ -465,6 +545,12 @@ public sealed class AppController : IDisposable
     {
         Settings.WallpaperEnabled = on;
         Settings.Save();
+        if (HelperMode)
+        {
+            // The engine sees the saved setting and attaches or removes the wallpaper.
+            RaiseChanged();
+            return;
+        }
         _reattachTimer.Stop();
 
         if (on && _wallpaper is null)
@@ -570,6 +656,7 @@ public sealed class AppController : IDisposable
 
     private void UpdateTray()
     {
+        if (_tray is null) return;
         _tray.SetWallpaperChecked(WallpaperRunning);
         _tray.SetTooltip(WallpaperRunning ? "Music Visualizer: wallpaper on" : "Music Visualizer");
     }
@@ -591,13 +678,24 @@ public sealed class AppController : IDisposable
     /// </summary>
     public void Stop()
     {
+        if (HelperMode)
+        {
+            // The engine turns off the wallpaper and audio and stays in the tray; this app closes.
+            if (_saveTimer.IsEnabled) { _saveTimer.Stop(); Settings.Save(); }
+            if (EventWaitHandle.TryOpenExisting(Shared.InstallInfo.StopEvent, out var stop))
+                using (stop) stop.Set();
+            _visualizer?.Close();
+            _settingsWindow?.Close();
+            Application.Current.Shutdown();
+            return;
+        }
         SetWallpaper(false, showErrors: false);
         _visualizer?.Close();
         _settingsWindow?.Close();
         Engine.Stop();
         Settings.Save();
-        _tray.SetTooltip("Music Visualizer: stopped (click to start again)");
-        _tray.ShowBalloon("Music Visualizer stopped", "It's still in the tray. Click the icon to start it again, or right-click → Exit completely to close it.");
+        _tray?.SetTooltip("Music Visualizer: stopped (click to start again)");
+        _tray?.ShowBalloon("Music Visualizer stopped", "It's still in the tray. Click the icon to start it again, or right-click → Exit completely to close it.");
         Memory.Trim();
     }
 
@@ -609,7 +707,10 @@ public sealed class AppController : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        bool savePending = _saveTimer.IsEnabled;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        _settingsWatcher?.Dispose();
+        _reloadTimer.Stop();
         _reattachTimer.Stop();
         _saveTimer.Stop();
         _idleTimer.Stop();
@@ -621,9 +722,10 @@ public sealed class AppController : IDisposable
             CloseWallpaper();
             DesktopWallpaper.RestoreStaticWallpaper();
         }
-        _tray.Dispose();
-        _shellWatcher.Dispose();
-        Settings.Save();
+        _tray?.Dispose();
+        _shellWatcher?.Dispose();
+        // The helper saves only its own unsaved change: the engine may have written since.
+        if (!HelperMode || savePending) Settings.Save();
         NowPlaying.Dispose();
         Engine.Dispose();
     }

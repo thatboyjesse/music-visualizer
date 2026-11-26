@@ -12,10 +12,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>MusicVisualizer</RootNamespace>
-    <AssemblyName>MusicVisualizer</AssemblyName>
+    <!-- The Rust engine is MusicVisualizer.exe; this app is the settings helper next to it (see App.xaml.cs). -->
+    <AssemblyName>MusicVisualizerSettings</AssemblyName>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.6.0</Version>
+    <Version>2.0.0</Version>
     <Product>Music Visualizer</Product>
 
     <!-- Memory: the app runs all day in the background, so favour a small footprint over throughput.
@@ -45,6 +46,11 @@
   </ItemGroup>
 
   <!-- The installer is its own project (Setup\Setup.csproj); keep its files out of the app. -->
+  <ItemGroup>
+    <None Remove="native\**" />
+    <Compile Remove="native\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <Compile Remove="Setup\**" />
     <Page Remove="Setup\**" />

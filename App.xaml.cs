@@ -7,7 +7,10 @@ using MusicVisualizer.Shared;
 namespace MusicVisualizer;
 
 /// <summary>
-/// Entry point. Command line:
+/// Entry point of MusicVisualizerSettings.exe. Installed next to the engine (MusicVisualizer.exe, Rust),
+/// it's the <b>settings helper</b>: the engine starts it with --settings or --visualizer while one of
+/// those windows is open, and it exits when they close (see <see cref="AppController.HelperMode"/>).
+/// Run on its own (a dev build, no engine next to it) it is the whole app, as before 2.0. Command line:
 ///   (none)          run as the wallpaper with no window (the main way to start it). If it's already
 ///                   running, start the wallpaper, or open settings when the wallpaper is already on.
 ///   --settings      open settings (the "Music Visualizer Settings" Start-menu shortcut)
@@ -29,6 +32,12 @@ public partial class App : Application
         {
             Uninstaller.Run(quiet: Has(InstallInfo.QuietArg));
             Shutdown();
+            return;
+        }
+
+        if (AppController.HelperMode)
+        {
+            StartHelper(Has(InstallInfo.VisualizerArg));
             return;
         }
 
@@ -59,6 +68,45 @@ public partial class App : Application
 
         _controller = new AppController();
         _controller.Start(launch);
+    }
+
+    /// <summary>
+    /// Settings helper: one copy (a second one passes its request on), windows only, no tray or wallpaper.
+    /// The engine signals it to show a window or to quit.
+    /// </summary>
+    private void StartHelper(bool visualizer)
+    {
+        _instance = new Mutex(true, InstallInfo.HelperMutex, out bool first);
+        if (!first)
+        {
+            string signal = visualizer ? InstallInfo.HelperVisualizerEvent : InstallInfo.HelperSettingsEvent;
+            if (EventWaitHandle.TryOpenExisting(signal, out var ev))
+                using (ev) ev.Set();
+            _instance.Dispose();
+            _instance = null;
+            Shutdown();
+            return;
+        }
+
+        DispatcherUnhandledException += OnUnhandledException;
+        var show = new EventWaitHandle(false, EventResetMode.AutoReset, InstallInfo.HelperSettingsEvent);
+        var viz = new EventWaitHandle(false, EventResetMode.AutoReset, InstallInfo.HelperVisualizerEvent);
+        var quit = new EventWaitHandle(false, EventResetMode.AutoReset, InstallInfo.HelperQuitEvent);
+        new Thread(() =>
+        {
+            while (true)
+            {
+                switch (WaitHandle.WaitAny(new WaitHandle[] { show, viz, quit }))
+                {
+                    case 0: Dispatcher.BeginInvoke(() => _controller?.ShowSettings()); break;
+                    case 1: Dispatcher.BeginInvoke(() => _controller?.ShowVisualizer()); break;
+                    default: Dispatcher.BeginInvoke(Shutdown); return;
+                }
+            }
+        }) { IsBackground = true, Name = "Helper signal listener" }.Start();
+
+        _controller = new AppController();
+        _controller.StartHelper(visualizer);
     }
 
     /// <summary>Other processes signal us through named events: show settings, start the wallpaper, or quit (installer/uninstaller).</summary>
