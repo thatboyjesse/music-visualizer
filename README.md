@@ -64,7 +64,7 @@ The left side shows a **live preview** shaped like your wallpaper screen, the **
 | **Album art** | *Show the album cover in the middle*. The cover always stays in the center of the screen; the position sliders move only the visualizer. Radial and Ring size it to fit their circle; the other styles show it behind the visualizer, bouncing with the beat and the glow. When it's on you also get **Cover size**, **Bounce** (from still to big), **Bounce sharpness** (from a soft swell with the bass to a sharp kick on strong beats), where to write the **song and artist** (below, above, left or right of the cover, or hidden), and *Hide the song title card*. |
 | **Intensity** | From *Calm* to *Wild*: how strongly it reacts to the music. Turn it up for quiet music. |
 | **Sensitivity by frequency** | Four sliders that make parts of the sound move it more or less (see below). **Even out** resets them. |
-| **Background** | The glow that pulses with the bass (on/off and strength), and a **picture behind the visualizer**: choose a file, or **Use my current wallpaper**. **Darken picture** helps the visualizer stand out. The picture is copied into the app's settings folder, so moving the original doesn't break it. |
+| **Background** | The glow that pulses with the bass (on/off and strength; like the album cover it stays in the center of the screen), and a **picture behind the visualizer**: choose a file, or **Use my current wallpaper**. **Darken picture** helps the visualizer stand out. The picture is copied into the app's settings folder, so moving the original doesn't break it. |
 | **Reset appearance** | Back to the defaults (keeps your picture). |
 
 **Audio tab**

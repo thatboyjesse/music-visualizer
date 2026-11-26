@@ -263,11 +263,12 @@ public sealed class VisualizerCanvas : FrameworkElement
         var center = new Point(Look.PositionX * w, Look.PositionY * h);
         if (Look.Glow && Look.GlowStrength > 0)
         {
-            // Soft glow that pulses with the bass.
+            // Soft glow that pulses with the bass. Like the album cover it stays at the centre of the
+            // screen; the position sliders move only the visualizer.
             double pulse = _analyzer.Bass * _analyzer.Bass;
             double gr = Math.Max(w, h) * (0.45 + pulse * 0.25) * Math.Max(0.5, Look.Size);
             var glow = WithOpacity(_glow[ColorIndex(0.3, 0) / 10], (0.25 + pulse * 1.5) * Look.GlowStrength);
-            dc.DrawEllipse(glow, null, center, gr, gr);
+            dc.DrawEllipse(glow, null, new Point(w / 2, h / 2), gr, gr);
         }
 
         // Album art: always at the centre of the screen; only the visualizer moves with the position
