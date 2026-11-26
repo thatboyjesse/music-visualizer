@@ -419,15 +419,12 @@ impl Renderer {
                 let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES { center: pt(0.0, 0.0), gradientOriginOffset: pt(0.0, 0.0), radiusX: 1.0, radiusY: 1.0 };
                 t.glow = Some((c, t.rt.CreateRadialGradientBrush(&props, None, &coll)?));
             }
-            // Like the album cover, the glow stays at the centre of the screen; the position
-            // settings move only the visualizer.
             let g = &t.glow.as_ref().unwrap().1;
-            let mid = pt(w / 2.0, h / 2.0);
-            g.SetCenter(mid);
+            g.SetCenter(pt(cx, cy));
             g.SetRadiusX(gr);
             g.SetRadiusY(gr);
             g.SetOpacity(opacity);
-            t.rt.FillEllipse(&D2D1_ELLIPSE { point: mid, radiusX: gr, radiusY: gr }, g);
+            t.rt.FillEllipse(&D2D1_ELLIPSE { point: pt(cx, cy), radiusX: gr, radiusY: gr }, g);
         }
 
         // Album art: always at the centre of the screen. Round styles size it to their circle;
