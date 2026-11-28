@@ -228,6 +228,7 @@ pub struct Loaded {
 
 /// Reads settings.json, falling back to the backup the C# side keeps (settings.json.bak), then defaults.
 pub fn load() -> Loaded {
+    let _lock = SettingsLock::take(); // not mid-save, when the backup is the previous version
     for path in [file_path(), backup_path()] {
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(settings) = serde_json::from_str::<Settings>(strip_bom(&text)) {
@@ -240,6 +241,7 @@ pub fn load() -> Loaded {
 
 /// Reads the main file only; None while it's missing or mid-write.
 pub fn read_current() -> Option<Loaded> {
+    let _lock = SettingsLock::take();
     let text = std::fs::read_to_string(file_path()).ok()?;
     let settings = serde_json::from_str::<Settings>(strip_bom(&text)).ok()?;
     Some(Loaded { text, settings })
@@ -257,6 +259,7 @@ fn backup_path() -> PathBuf {
 /// and saves it the same way the C# side does (temp file, then an atomic replace that keeps a
 /// backup). Returns the new file contents, or None if it couldn't be written.
 pub fn patch(edit: impl FnOnce(&mut Map<String, Value>)) -> Option<Loaded> {
+    let _lock = SettingsLock::take();
     let current = std::fs::read_to_string(file_path())
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(strip_bom(&t)).ok())
@@ -270,6 +273,41 @@ pub fn patch(edit: impl FnOnce(&mut Map<String, Value>)) -> Option<Loaded> {
     write_atomic(&text).ok()?;
     let settings = serde_json::from_str::<Settings>(&text).ok()?;
     Some(Loaded { text, settings })
+}
+
+/// The named mutex the settings app also takes around its read-change-write (`AppSettings.Save`),
+/// so neither writes a file based on a version the other has just replaced. Waits at most 1 s.
+struct SettingsLock(windows::Win32::Foundation::HANDLE, bool);
+
+impl SettingsLock {
+    fn take() -> SettingsLock {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+        let name = crate::sys::wide(crate::sys::SETTINGS_MUTEX);
+        unsafe {
+            let Ok(h) = CreateMutexW(None, false, PCWSTR(name.as_ptr())) else {
+                return SettingsLock(Default::default(), false);
+            };
+            let r = WaitForSingleObject(h, 1000);
+            SettingsLock(h, r == WAIT_OBJECT_0 || r == WAIT_ABANDONED)
+        }
+    }
+}
+
+impl Drop for SettingsLock {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::ReleaseMutex;
+        unsafe {
+            if self.1 {
+                let _ = ReleaseMutex(self.0);
+            }
+            if !self.0.is_invalid() {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
 }
 
 fn write_atomic(text: &str) -> std::io::Result<()> {
@@ -294,7 +332,7 @@ fn write_atomic(text: &str) -> std::io::Result<()> {
 }
 
 /// The settings that belong to the wallpaper rather than to a style (`Appearance.CopySharedFrom`).
-pub const SHARED_LOOK_KEYS: [&str; 5] = ["FrameRate", "BackgroundImage", "BackgroundDim", "Title", "PeekCard"];
+pub const SHARED_LOOK_KEYS: [&str; 3] = ["FrameRate", "BackgroundImage", "BackgroundDim"];
 
 /// `AppController.SetMode`: saves the current look under its style, switches to the new style's own
 /// look (or a copy of the current one the first time), keeping the shared wallpaper settings.

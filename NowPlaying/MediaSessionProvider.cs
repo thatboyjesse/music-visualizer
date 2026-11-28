@@ -6,9 +6,10 @@ using Windows.Storage.Streams;
 namespace MusicVisualizer.NowPlaying;
 
 /// <summary>
-/// Reads now-playing info from the Windows media session (the same source as the
-/// volume flyout). Works with the Spotify desktop app with no sign-in, on free accounts too.
-/// Falls back to whichever app Windows considers current if Spotify isn't running.
+/// Reads now-playing info from the Windows media session (the same source as the volume flyout).
+/// Works with the Spotify desktop app with no sign-in, on free accounts too. Shows one app at a
+/// time: the app the visualizer listens to (see <see cref="PickSession"/>, the same rules as the
+/// engine's <c>pick_session</c> in native/src/nowplaying.rs).
 /// </summary>
 public sealed class MediaSessionProvider : INowPlayingProvider
 {
@@ -16,13 +17,68 @@ public sealed class MediaSessionProvider : INowPlayingProvider
     private string? _artKey;
     private ImageSource? _art;
 
+    /// <summary>The session last shown, so the card's buttons control the app it shows.</summary>
+    private GlobalSystemMediaTransportControlsSession? _shown;
+
     public string Name => "Windows media";
+
+    /// <summary>
+    /// Apps to show, in order of preference (lowercase process names without ".exe"), or null for
+    /// "everything on this PC". Set by the app from the Listen-to setting and the audio engine.
+    /// </summary>
+    public Func<IReadOnlyList<string>?>? PreferredApps { get; set; }
 
     private async Task<GlobalSystemMediaTransportControlsSession?> GetSessionAsync()
     {
         _manager ??= await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-        var sessions = _manager.GetSessions();
-        return sessions.FirstOrDefault(s => IsSpotify(s.SourceAppUserModelId)) ?? _manager.GetCurrentSession();
+        _shown = PickSession(_manager, PreferredApps?.Invoke());
+        return _shown;
+    }
+
+    /// <summary>
+    /// Chosen apps: the first app in <paramref name="prefer"/> (the most recently sounding comes
+    /// first) that has a media session, preferring one that's playing; none if no chosen app has one,
+    /// so the card never shows an app the visualizer isn't listening to. Everything: a playing
+    /// Spotify, else the current session if playing, else any playing one, else Spotify, else current.
+    /// </summary>
+    private static GlobalSystemMediaTransportControlsSession? PickSession(
+        GlobalSystemMediaTransportControlsSessionManager m, IReadOnlyList<string>? prefer)
+    {
+        var sessions = m.GetSessions().ToList();
+        static bool Playing(GlobalSystemMediaTransportControlsSession s)
+        {
+            try { return s.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing; }
+            catch { return false; }
+        }
+        if (prefer is not null)
+        {
+            foreach (var name in prefer)
+            {
+                var mine = sessions.Where(s => MatchesApp(s.SourceAppUserModelId, name)).ToList();
+                var pick = mine.FirstOrDefault(Playing) ?? mine.FirstOrDefault();
+                if (pick is not null) return pick;
+            }
+            return null;
+        }
+        var current = m.GetCurrentSession();
+        var spotify = sessions.FirstOrDefault(s => IsSpotify(s.SourceAppUserModelId));
+        if (spotify is not null && Playing(spotify)) return spotify;
+        if (current is not null && Playing(current)) return current;
+        return sessions.FirstOrDefault(Playing) ?? spotify ?? current;
+    }
+
+    /// <summary>
+    /// Whether a session (by its AppUserModelID) belongs to the app with this process name (lowercase,
+    /// no ".exe"). Desktop apps' IDs are their exe name (<c>Spotify.exe</c>) or a name of their own
+    /// (<c>Chrome</c>, <c>MSEdge</c>); Store apps' are <c>Publisher.App_hash!App</c>. Firefox uses a
+    /// hash, so it can't be matched.
+    /// </summary>
+    public static bool MatchesApp(string? aumid, string name)
+    {
+        string a = (aumid ?? "").ToLowerInvariant().Split('!')[0];
+        if (name == "spotify" && a.Contains("spotify")) return true;
+        string b = a.EndsWith(".exe") ? a[..^4] : a;
+        return b == name || b.Split('.', '_')[0] == name;
     }
 
     private static bool IsSpotify(string? aumid) =>
@@ -103,21 +159,22 @@ public sealed class MediaSessionProvider : INowPlayingProvider
         }
     }
 
+    // The buttons act on the app the card shows (falling back to picking one if nothing was shown yet).
     public async Task PlayPauseAsync()
     {
-        var s = await GetSessionAsync();
+        var s = _shown ?? await GetSessionAsync();
         if (s is not null) await s.TryTogglePlayPauseAsync();
     }
 
     public async Task NextAsync()
     {
-        var s = await GetSessionAsync();
+        var s = _shown ?? await GetSessionAsync();
         if (s is not null) await s.TrySkipNextAsync();
     }
 
     public async Task PreviousAsync()
     {
-        var s = await GetSessionAsync();
+        var s = _shown ?? await GetSessionAsync();
         if (s is not null) await s.TrySkipPreviousAsync();
     }
 

@@ -128,7 +128,7 @@
                         <!-- Style buttons are created in code, one per VisualMode. -->
                         <WrapPanel x:Name="ModeButtons"/>
                         <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
-                                   Text="Each style remembers its own settings below. Frame rate, the background picture and the song title card are shared by all styles."/>
+                                   Text="Each style remembers its own settings below. Frame rate and the background picture are shared by all styles."/>
                         <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                             <CheckBox x:Name="PeaksBox" Content="Peak caps" Margin="0,0,24,8" Checked="OnLookChanged" Unchecked="OnLookChanged"/>
                             <CheckBox x:Name="ReflectionBox" Content="Reflection" Checked="OnLookChanged" Unchecked="OnLookChanged"/>

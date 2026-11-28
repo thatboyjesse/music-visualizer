@@ -13,7 +13,7 @@ A Windows music visualizer that lives in your **system tray** and runs as a **li
 - **Cycle through styles** on a timer or every few songs, each with its own saved settings.
 - **Seven styles:** Bars, Mirror, Blocks, Spectrum, Radial, Ring and Wave, with as many or as few bars as you like.
 - **Back to your normal wallpaper when it's quiet:** when nothing is playing, your usual desktop background fades back in, and the visualizer returns with the music.
-- **Spotify now-playing:** album art, title, artist and progress, read from the Spotify desktop app through Windows. No sign-in, free accounts included.
+- **Now-playing:** album art, title, artist and progress, read through Windows from the app you're listening to (Spotify, a browser, …). No sign-in, free accounts included. When you listen only to chosen apps, it shows the one that played most recently, one app at a time, and never another app's song.
 - **Light on your PC:** while drawing the wallpaper it uses about 5–8% of one CPU core and 45–60 MB of memory (20–30 MB of its own), roughly 2–4× less CPU and 3× less memory than version 1.6. Nothing is drawn while a window covers the wallpaper or nothing plays.
 - **Visualizer window** (optional): fullscreen, keyboard shortcuts, play/pause/skip, and audio files (mp3, wav, flac, m4a, aac, wma, aiff).
 
@@ -56,7 +56,7 @@ The left side shows a **live preview** shaped like your wallpaper screen, the **
 
 | Setting | What it does |
 |---|---|
-| **Look** | The style (see below). **Each style remembers its own settings** (colors, position, size, bars, intensity, album art...); frame rate, the background picture and the song title card are shared. Peak caps and reflection on/off. **Number of bars** (16 to 128; fewer looks bolder and simpler) and bar thickness. |
+| **Look** | The style (see below). **Each style remembers its own settings** (colors, position, size, bars, intensity, album art...); the song title card's position (or hidden) and its brief pop-up too. Frame rate and the background picture are shared. Peak caps and reflection on/off. **Number of bars** (16 to 128; fewer looks bolder and simpler) and bar thickness. |
 | **Colors** | *Song art colors* (the default): a gradient between the two main colors of the album cover that's playing, for every song. Black-and-white covers give greys and white, and when the music stops it keeps the last song's colors. It never switches to the rainbow, and colors blend over about a second when the song changes. *Rainbow*: cycles colors with the beat. *My colors*: a gradient between two colors; pick from the swatches or type a hex code like `#FF4D6D`. |
 | **Position and size** | Move it left/right and up/down, scale it (**Size**), and set how much of the screen's **Width** it spans. **Center it** puts it back in the middle. |
 | **Cycle styles** | *Switch between styles automatically*: tick the styles to use, then change **after some time** (15 s to 1 hour) or **after some songs** (1 to 10), in order or in *random order*. Each style shows with its own saved settings. |
@@ -119,7 +119,7 @@ The bottom-left buttons open the **visualizer window** or **stop** (it stays in 
 | **Screen 1 / Screen 2…** | Move the wallpaper to the next monitor |
 | **Wallpaper** | Turn the live wallpaper on or off |
 | ⚙ | Open settings |
-| Now-playing card ⏮ ⏯ ⏭ | Control Spotify (or whichever media app is playing) |
+| Now-playing card ⏮ ⏯ ⏭ | Control the app whose song is shown |
 
 | Key | Action |
 |---|---|
@@ -208,7 +208,7 @@ That's with 96 bars, glow, the album cover with its caption, the song card and s
 - The settings and visualizer windows are the C# app, so they use as much memory as 1.6 did while they're open (the engine itself stays small).
 - *Only the apps I choose* needs Windows 11, or Windows 10 build 20348 or later.
 - An app shows in the list only after it has played sound since it started. Its child processes are included (browsers and Spotify play audio from a helper process).
-- Now-playing only covers apps on this PC (the Spotify desktop app, or any app that reports to Windows' media controls).
+- Now-playing only covers apps on this PC (the Spotify desktop app, or any app that reports to Windows' media controls). With *Only the apps I choose*, Firefox's song can't be matched to Firefox, so it isn't shown.
 - Monitors with different display scaling are untested.
 - The fade back to your normal wallpaper uses Windows' main wallpaper picture and fit. With a different picture per monitor, or a slideshow mid-change, the fade can briefly show the wrong picture before the real one appears.
 

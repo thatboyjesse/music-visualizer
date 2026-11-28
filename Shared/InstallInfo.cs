@@ -34,6 +34,8 @@ namespace MusicVisualizer.Shared
         public const string WallpaperEvent = @"Local\MusicVisualizer.Wallpaper";
         /// <summary>The settings window's Stop button: the engine turns everything off but stays in the tray.</summary>
         public const string StopEvent = @"Local\MusicVisualizer.Stop";
+        /// <summary>Held while settings.json is read, changed and written, so the engine and the settings app never save over each other.</summary>
+        public const string SettingsMutex = @"Local\MusicVisualizer.Settings";
 
         // The settings app (MusicVisualizerSettings.exe): one copy, and signals from the engine.
         public const string HelperMutex = @"Local\MusicVisualizer.Helper";

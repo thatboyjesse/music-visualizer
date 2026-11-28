@@ -135,6 +135,8 @@ public partial class SettingsWindow : Window
     /// <summary>Another style was picked (here, in the visualizer window, or by the cycle): show its own settings.</summary>
     private void OnLookSwitched(object? sender, EventArgs e)
     {
+        // A slider still being dragged would carry on editing the new style with the old one's value.
+        if (Mouse.Captured is System.Windows.Controls.Primitives.Thumb) Mouse.Capture(null);
         _look = _app.Settings.Look.Clone();
         SyncLook();
     }

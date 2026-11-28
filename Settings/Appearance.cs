@@ -92,14 +92,16 @@ public sealed class Appearance
 
     /// <summary>
     /// Copies the settings that belong to the wallpaper rather than to a style (frame rate, background
-    /// picture, song-title card), so switching style keeps them. Everything else is per style.
+    /// picture and its dim), so switching style keeps them. Everything else is per style.
     /// </summary>
+    /// <summary>The JSON names of the settings <see cref="CopySharedFrom"/> copies (also in the engine's settings.rs).</summary>
+    public static readonly string[] SharedKeys =
+        [nameof(FrameRate), nameof(BackgroundImage), nameof(BackgroundDim)];
+
     public void CopySharedFrom(Appearance other)
     {
         FrameRate = other.FrameRate;
         BackgroundImage = other.BackgroundImage;
         BackgroundDim = other.BackgroundDim;
-        Title = other.Title;
-        PeekCard = other.PeekCard;
     }
 }

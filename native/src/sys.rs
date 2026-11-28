@@ -15,6 +15,7 @@ pub const SHOW_EVENT: &str = r"Local\MusicVisualizer.Show";
 pub const QUIT_EVENT: &str = r"Local\MusicVisualizer.Quit";
 pub const WALLPAPER_EVENT: &str = r"Local\MusicVisualizer.Wallpaper";
 pub const STOP_EVENT: &str = r"Local\MusicVisualizer.Stop";
+pub const SETTINGS_MUTEX: &str = r"Local\MusicVisualizer.Settings";
 pub const HELPER_SETTINGS_EVENT: &str = r"Local\MusicVisualizer.Helper.Settings";
 pub const HELPER_VISUALIZER_EVENT: &str = r"Local\MusicVisualizer.Helper.Visualizer";
 pub const HELPER_QUIT_EVENT: &str = r"Local\MusicVisualizer.Helper.Quit";

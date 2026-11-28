@@ -462,6 +462,24 @@ impl App {
         self.ticks += 1;
         self.debug_log(now);
         self.now_playing.set_slow(!self.running());
+        // Now playing follows what's being listened to: with chosen apps, the one that made sound
+        // most recently first, then the others in the order they were chosen.
+        let prefer = if self.s().listen == ListenMode::SelectedApps {
+            let mut order: Vec<String> = self.capture.app_sound_times(now).into_iter()
+                .filter(|(_, t)| *t < f64::MAX)
+                .map(|(n, _)| n)
+                .collect();
+            for a in &self.s().apps {
+                let a = a.to_lowercase();
+                if !order.contains(&a) {
+                    order.push(a);
+                }
+            }
+            Some(order)
+        } else {
+            None
+        };
+        self.now_playing.set_prefer(prefer);
         if self.wall.is_none() {
             return;
         }

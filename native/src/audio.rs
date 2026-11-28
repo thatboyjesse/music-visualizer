@@ -210,6 +210,8 @@ pub struct Capture {
     loopback_rate: u32,
     loopback_retry: Option<Instant>,
     apps: HashMap<u32, App>,
+    /// Chosen app name (lowercase, no ".exe") for each captured root process.
+    app_names: HashMap<u32, String>,
     last_scan: Option<Instant>,
     last_device_check: Instant,
     /// Last error from starting an app capture (e.g. Windows too old).
@@ -225,6 +227,7 @@ impl Capture {
             loopback_rate: 48000,
             loopback_retry: None,
             apps: HashMap::new(),
+            app_names: HashMap::new(),
             last_scan: None,
             last_device_check: Instant::now(),
             app_error: None,
@@ -248,6 +251,7 @@ impl Capture {
         self.loopback = None;
         self.loopback_retry = None;
         self.apps.clear();
+        self.app_names.clear();
         self.last_scan = None;
         self.source = Source::None;
     }
@@ -332,7 +336,9 @@ impl Capture {
         let every = Duration::from_secs(if running { 10 } else { 2 });
         if self.last_scan.map(|t| now.duration_since(t) >= every).unwrap_or(true) {
             self.last_scan = Some(now);
-            let wanted = root_process_ids(names);
+            let found = root_process_ids(names);
+            let wanted: Vec<u32> = found.iter().map(|(p, _)| *p).collect();
+            self.app_names = found.into_iter().collect();
             self.apps.retain(|pid, app| {
                 wanted.contains(pid) && !matches!(app, App::Failed(t) if now.duration_since(*t) >= Duration::from_secs(2))
             });
@@ -395,6 +401,22 @@ impl Capture {
         }
         best
     }
+
+    /// For each chosen app being captured: its name (lowercase, no ".exe") and seconds since it
+    /// last made sound, most recent first. Empty unless capturing selected apps.
+    pub fn app_sound_times(&self, now: Instant) -> Vec<(String, f64)> {
+        let mut by_name: HashMap<String, f64> = HashMap::new();
+        for (pid, app) in &self.apps {
+            if let (App::Running(s), Some(name)) = (app, self.app_names.get(pid)) {
+                let t = s.ring.since_sound(now);
+                let e = by_name.entry(name.clone()).or_insert(f64::MAX);
+                *e = e.min(t);
+            }
+        }
+        let mut list: Vec<(String, f64)> = by_name.into_iter().collect();
+        list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        list
+    }
 }
 
 unsafe fn activate(pid: u32) -> Result<Pending> {
@@ -455,7 +477,8 @@ unsafe fn finish_activation(p: &Pending) -> Result<Stream> {
 
 /// `AudioApps.RootProcessIds`: processes with one of these names (no ".exe") whose parent has a
 /// different name. Capturing those includes their children (browsers and Spotify play from a child).
-fn root_process_ids(names: &[String]) -> Vec<u32> {
+/// Top-level processes of the named apps, with the (lowercase) name each one matched.
+fn root_process_ids(names: &[String]) -> Vec<(u32, String)> {
     let mut procs: Vec<(u32, u32, String)> = Vec::new(); // (pid, parent, lowercase name without .exe)
     unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return vec![] };
@@ -480,7 +503,7 @@ fn root_process_ids(names: &[String]) -> Vec<u32> {
         }
         let parent_same = procs.iter().any(|(p, _, n)| p == parent && n == name);
         if !parent_same {
-            result.push(*pid);
+            result.push((*pid, name.clone()));
         }
     }
     result

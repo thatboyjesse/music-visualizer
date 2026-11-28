@@ -25,6 +25,8 @@ public sealed class AudioEngine : IDisposable
     // App capture: one capture (and ring buffer) per top-level process of each chosen app.
     private readonly Dictionary<int, (ProcessAudioCapture? Capture, SampleRing Ring)> _apps = new();
     private string[] _appNames = Array.Empty<string>();
+    /// <summary>Chosen app name (lowercase, no ".exe") of each captured root process.</summary>
+    private readonly Dictionary<int, string> _appNameByPid = new();
     private System.Threading.Timer? _appTimer;
     private int _appGeneration;
 
@@ -105,12 +107,19 @@ public sealed class AudioEngine : IDisposable
     private void RefreshApps(int generation)
     {
         var wanted = new HashSet<int>();
+        var names = new Dictionary<int, string>();
         foreach (var name in _appNames)
-            foreach (int pid in AudioApps.RootProcessIds(name)) wanted.Add(pid);
+            foreach (int pid in AudioApps.RootProcessIds(name))
+            {
+                wanted.Add(pid);
+                names[pid] = name.ToLowerInvariant();
+            }
 
         lock (_lock)
         {
             if (generation != _appGeneration) return; // Stop() or a newer StartApps() happened
+            _appNameByPid.Clear();
+            foreach (var (pid, name) in names) _appNameByPid[pid] = name;
 
             // Drop apps that exited and captures that ended; ended ones restart below.
             foreach (var pid in _apps.Keys.Where(p => !wanted.Contains(p) || _apps[p].Capture is { IsRunning: false }).ToList())
@@ -224,6 +233,26 @@ public sealed class AudioEngine : IDisposable
             }
             return best;
         }
+    }
+
+    /// <summary>
+    /// For each chosen app being captured: its name (lowercase, no ".exe") and seconds since it last
+    /// made sound, most recent first. Empty unless capturing selected apps. Used to show the
+    /// now-playing info of the app actually being listened to.
+    /// </summary>
+    public IReadOnlyList<(string Name, double SecondsSinceSound)> AppSoundTimes()
+    {
+        var byName = new Dictionary<string, double>();
+        lock (_lock)
+        {
+            foreach (var (pid, (capture, ring)) in _apps)
+            {
+                if (capture is null || !_appNameByPid.TryGetValue(pid, out var name)) continue;
+                double t = ring.SecondsSinceSound;
+                byName[name] = byName.TryGetValue(name, out var old) ? Math.Min(old, t) : t;
+            }
+        }
+        return byName.Select(kv => (kv.Key, kv.Value)).OrderBy(x => x.Value).ToList();
     }
 
     /// <summary>Copies the latest <see cref="FftSize"/> samples, oldest first, summing all sources.

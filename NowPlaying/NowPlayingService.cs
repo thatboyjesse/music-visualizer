@@ -15,6 +15,13 @@ public sealed class NowPlayingService : IDisposable
 
     public TrackInfo? Current { get; private set; }
 
+    /// <summary>Apps to show, most preferred first, or null for everything (see MediaSessionProvider.PreferredApps).</summary>
+    public Func<IReadOnlyList<string>?>? PreferredApps
+    {
+        get => _media.PreferredApps;
+        set => _media.PreferredApps = value;
+    }
+
     /// <summary>
     /// The two main colours of the latest album cover. Kept when playback stops or a track has
     /// no cover, so the visuals keep the last song's colours instead of switching to something else.

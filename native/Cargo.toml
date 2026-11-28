@@ -1,6 +1,6 @@
 [package]
 name = "music-visualizer"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 description = "Music Visualizer's always-running engine: live wallpaper, audio capture, analysis, drawing and tray icon (Rust + Direct2D)"
 build = "build.rs"

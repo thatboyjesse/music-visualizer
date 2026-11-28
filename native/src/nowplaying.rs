@@ -1,5 +1,7 @@
 //! Now playing, from the Windows media session (`NowPlaying/MediaSessionProvider.cs` and
-//! `NowPlayingService.cs`): prefers Spotify, else whichever app Windows considers current.
+//! `NowPlayingService.cs`). Shows the app the visualizer listens to, one app at a time: with
+//! "Only the apps I choose", the chosen app that made sound most recently (see `pick_session`);
+//! with "Everything on this PC", a playing session (Spotify first), else Windows' current one.
 //! Polled every 2 seconds on its own thread (the WinRT calls block), which also decodes the
 //! cover and works out its colours; the main thread is woken with an event.
 
@@ -12,7 +14,7 @@ use windows::Media::Control::*;
 use windows::Storage::Streams::*;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Com::*;
-use windows::Win32::System::Threading::{SetEvent, WaitForSingleObject};
+use windows::Win32::System::Threading::{SetEvent, WaitForMultipleObjects};
 
 use crate::imaging::{Pixels, Rgb};
 
@@ -56,7 +58,10 @@ pub struct Shared {
 pub struct NowPlaying {
     pub shared: Arc<Mutex<Shared>>,
     stop: HANDLE,
+    /// Set to poll again right away (the app to show changed).
+    poke: HANDLE,
     slow: Arc<AtomicBool>,
+    prefer: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 impl NowPlaying {
@@ -64,16 +69,35 @@ impl NowPlaying {
     pub fn start(wake: HANDLE) -> NowPlaying {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let stop = unsafe { windows::Win32::System::Threading::CreateEventW(None, true, false, None).unwrap_or_default() };
+        let poke = unsafe { windows::Win32::System::Threading::CreateEventW(None, false, false, None).unwrap_or_default() };
         let s = shared.clone();
         let slow = Arc::new(AtomicBool::new(false));
         let sl = slow.clone();
-        let (wake_raw, stop_raw) = (wake.0 as isize, stop.0 as isize);
+        let prefer = Arc::new(Mutex::new(None));
+        let pr = prefer.clone();
+        let (wake_raw, stop_raw, poke_raw) = (wake.0 as isize, stop.0 as isize, poke.0 as isize);
         std::thread::Builder::new()
             .name("now playing".into())
             .stack_size(256 * 1024)
-            .spawn(move || run(s, sl, HANDLE(wake_raw as *mut _), HANDLE(stop_raw as *mut _)))
+            .spawn(move || run(s, sl, pr, HANDLE(wake_raw as *mut _), HANDLE(stop_raw as *mut _), HANDLE(poke_raw as *mut _)))
             .ok();
-        NowPlaying { shared, stop, slow }
+        NowPlaying { shared, stop, poke, slow, prefer }
+    }
+
+    /// Which apps to show, in order of preference (lowercase process names without ".exe"),
+    /// or `None` for "everything on this PC". When the first choice changes, polls again at once.
+    pub fn set_prefer(&self, prefer: Option<Vec<String>>) {
+        let mut p = self.prefer.lock().unwrap();
+        if *p != prefer {
+            let first_changed = p.as_ref().and_then(|v| v.first().cloned()) != prefer.as_ref().and_then(|v| v.first().cloned())
+                || p.is_some() != prefer.is_some();
+            *p = prefer;
+            if first_changed {
+                unsafe {
+                    let _ = SetEvent(self.poke);
+                }
+            }
+        }
     }
 
     /// While nothing is drawn, poll every 6 s instead of every 2 s.
@@ -90,7 +114,7 @@ impl Drop for NowPlaying {
     }
 }
 
-fn run(shared: Arc<Mutex<Shared>>, slow: Arc<AtomicBool>, wake: HANDLE, stop: HANDLE) {
+fn run(shared: Arc<Mutex<Shared>>, slow: Arc<AtomicBool>, prefer: Arc<Mutex<Option<Vec<String>>>>, wake: HANDLE, stop: HANDLE, poke: HANDLE) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
@@ -99,7 +123,8 @@ fn run(shared: Arc<Mutex<Shared>>, slow: Arc<AtomicBool>, wake: HANDLE, stop: HA
     let mut art: Option<Arc<Pixels>> = None;
     let mut art_id = 0u64;
     loop {
-        let track = poll(&mut manager, &mut art_key, &mut art, &mut art_id);
+        let wanted = prefer.lock().unwrap().clone();
+        let track = poll(&mut manager, &wanted, &mut art_key, &mut art, &mut art_id);
         {
             let mut s = shared.lock().unwrap();
             let art_changed = s.track.as_ref().map(|t| t.art_id) != track.as_ref().map(|t| t.art_id);
@@ -116,8 +141,8 @@ fn run(shared: Arc<Mutex<Shared>>, slow: Arc<AtomicBool>, wake: HANDLE, stop: HA
         unsafe {
             let _ = SetEvent(wake);
             let wait = if slow.load(Ordering::Relaxed) { 6000 } else { 2000 };
-            if WaitForSingleObject(stop, wait) == windows::Win32::Foundation::WAIT_OBJECT_0 {
-                return;
+            if WaitForMultipleObjects(&[stop, poke], false, wait) == windows::Win32::Foundation::WAIT_OBJECT_0 {
+                return; // stop; a poke (index 1) or the timeout just polls again
             }
         }
     }
@@ -125,6 +150,7 @@ fn run(shared: Arc<Mutex<Shared>>, slow: Arc<AtomicBool>, wake: HANDLE, stop: HA
 
 fn poll(
     manager: &mut Option<GlobalSystemMediaTransportControlsSessionManager>,
+    prefer: &Option<Vec<String>>,
     art_key: &mut String,
     art: &mut Option<Arc<Pixels>>,
     art_id: &mut u64,
@@ -134,21 +160,7 @@ fn poll(
             *manager = Some(GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?);
         }
         let m = manager.as_ref().unwrap();
-        let sessions = m.GetSessions()?;
-        let mut session = None;
-        for s in sessions {
-            if s.SourceAppUserModelId().map(|a| is_spotify(&a.to_string())).unwrap_or(false) {
-                session = Some(s);
-                break;
-            }
-        }
-        let session = match session {
-            Some(s) => s,
-            None => match m.GetCurrentSession() {
-                Ok(s) => s,
-                Err(_) => return Ok(None),
-            },
-        };
+        let Some(session) = pick_session(m, prefer)? else { return Ok(None) };
         let props = session.TryGetMediaPropertiesAsync()?.get()?;
         let title = props.Title()?.to_string();
         if title.trim().is_empty() {
@@ -197,6 +209,60 @@ fn poll(
             None
         }
     }
+}
+
+/// The session to show, one app at a time.
+///
+/// - Chosen apps (`prefer` is `Some`): the first app in `prefer` (the one that made sound most
+///   recently comes first) that has a media session, preferring one of its sessions that's playing.
+///   If none of the chosen apps has a session, nothing is shown: the card never shows an app the
+///   visualizer isn't listening to.
+/// - Everything (`None`): a playing Spotify, else Windows' current session if it's playing, else any
+///   playing session, else Spotify, else the current session.
+fn pick_session(
+    m: &GlobalSystemMediaTransportControlsSessionManager,
+    prefer: &Option<Vec<String>>,
+) -> windows::core::Result<Option<GlobalSystemMediaTransportControlsSession>> {
+    let sessions: Vec<_> = m.GetSessions()?.into_iter().collect();
+    let aumid = |s: &GlobalSystemMediaTransportControlsSession| s.SourceAppUserModelId().map(|a| a.to_string()).unwrap_or_default();
+    let playing = |s: &GlobalSystemMediaTransportControlsSession| {
+        s.GetPlaybackInfo().and_then(|i| i.PlaybackStatus()).map(|p| p == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing).unwrap_or(false)
+    };
+    if let Some(names) = prefer {
+        for name in names {
+            let mine: Vec<_> = sessions.iter().filter(|s| matches_app(&aumid(s), name)).collect();
+            if let Some(s) = mine.iter().find(|s| playing(s)).or(mine.first()) {
+                return Ok(Some((*s).clone()));
+            }
+        }
+        return Ok(None);
+    }
+    let current = m.GetCurrentSession().ok();
+    let spotify = sessions.iter().find(|s| is_spotify(&aumid(s)));
+    if let Some(s) = spotify.filter(|s| playing(s)) {
+        return Ok(Some(s.clone()));
+    }
+    if let Some(c) = current.as_ref().filter(|c| playing(c)) {
+        return Ok(Some(c.clone()));
+    }
+    if let Some(s) = sessions.iter().find(|s| playing(s)) {
+        return Ok(Some(s.clone()));
+    }
+    Ok(spotify.cloned().or(current))
+}
+
+/// Whether a media session (by its AppUserModelID) belongs to the app with this process name
+/// (lowercase, no ".exe"). Desktop apps' IDs are their exe name (`Spotify.exe`, `vlc.exe`) or a
+/// name of their own (`Chrome`, `MSEdge`, sometimes with a `.suffix`); Store apps' IDs are
+/// `Publisher.App_hash!App`. Firefox uses a hash of its install path, so it can't be matched.
+pub fn matches_app(aumid: &str, name: &str) -> bool {
+    let a = aumid.to_lowercase();
+    let a = a.split('!').next().unwrap_or("");
+    if name == "spotify" && a.contains("spotify") {
+        return true;
+    }
+    let base = a.strip_suffix(".exe").unwrap_or(a);
+    base == name || base.split(|c| c == '.' || c == '_').next() == Some(name)
 }
 
 fn load_art(reference: &IRandomAccessStreamReference) -> Option<Pixels> {

@@ -95,11 +95,13 @@ public sealed class AppController : IDisposable
         _reattachTimer.Tick += (_, _) => RetryWallpaper();
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); Settings.Save(); };
         if (HelperMode) _saveTimer.Interval = TimeSpan.FromMilliseconds(150); // the wallpaper follows the sliders
+        AppSettings.MergeOnSave = HelperMode; // the engine writes settings.json too (style cycle, tray)
         _reloadTimer.Tick += (_, _) => { _reloadTimer.Stop(); ReloadFromEngine(); };
         _idleTimer.Tick += (_, _) => CheckIdle();
         _idleTimer.Start();
         _cycleTimer.Tick += (_, _) => OnCycleTick();
         NowPlaying.Changed += (_, _) => OnSongForCycle();
+        NowPlaying.PreferredApps = PreferredNowPlayingApps;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         // A hidden top-level window, only so we receive the "TaskbarCreated" broadcast
@@ -165,11 +167,18 @@ public sealed class AppController : IDisposable
 
     /// <summary>
     /// The engine changed settings.json (style cycle, wallpaper on/off from the tray, couldn't attach...):
-    /// take its version, unless our own change is about to be saved (that save wins).
+    /// take its version. A pending save of ours goes first: it only writes what changed here, on top
+    /// of the engine's version (AppSettings.MergeOnSave), so neither change is lost. Not waiting for it
+    /// matters: a slider being dragged keeps restarting the save timer, and the style the engine
+    /// switched to would never show here, so the edits would keep going to the old style.
     /// </summary>
     private void ReloadFromEngine()
     {
-        if (_saveTimer.IsEnabled) return;
+        if (_saveTimer.IsEnabled)
+        {
+            _saveTimer.Stop();
+            Settings.Save();
+        }
         var loaded = AppSettings.Load();
         if (loaded.ToJson() == Settings.ToJson()) return; // our own save
         bool lookSwitched = loaded.Mode != Settings.Mode || loaded.Look.ToJson() != Settings.Look.ToJson();
@@ -216,8 +225,14 @@ public sealed class AppController : IDisposable
             _settingsWindow.Closed += (_, _) =>
             {
                 _settingsWindow = null;
-                Settings.SetupDone = true;
-                Settings.Save();
+                // In helper mode save only what's still pending: an unconditional save here could
+                // write back a style the engine has just cycled away from.
+                if (!Settings.SetupDone || !HelperMode || _saveTimer.IsEnabled)
+                {
+                    _saveTimer.Stop();
+                    Settings.SetupDone = true;
+                    Settings.Save();
+                }
                 UpdateAudio();
                 ShowTrayHintOnce();
                 Memory.Trim(); // drop the preview and window resources
@@ -328,6 +343,9 @@ public sealed class AppController : IDisposable
 
     private void OnSongForCycle()
     {
+        // Next to the engine, only the engine cycles styles. If this helper also did, both would
+        // pick on the same song change and the wallpaper would flash one style, then the other.
+        if (HelperMode) return;
         var t = NowPlaying.Current;
         if (t is null) return;
         string key = $"{t.Title}|{t.Artist}";
@@ -346,6 +364,7 @@ public sealed class AppController : IDisposable
     /// <summary>Moves to the next chosen style (in order, or at random without repeating the current one).</summary>
     private void NextCycleStyle()
     {
+        if (HelperMode) return; // the engine cycles (see OnSongForCycle)
         var list = CycleList();
         ResetCycle();
         if (list.Count < 2) return;
@@ -367,6 +386,7 @@ public sealed class AppController : IDisposable
     {
         Settings.Look = look.Clone();
         Settings.Looks[Mode.ToString()] = Settings.Look.Clone();
+        foreach (var saved in Settings.Looks.Values) saved.CopySharedFrom(Settings.Look); // frame rate, picture: every style
         SaveSoon();
         if (_wallpaper is not null) _wallpaper.Look = Settings.Look;
         AppearanceChanged?.Invoke(this, EventArgs.Empty);
@@ -475,6 +495,23 @@ public sealed class AppController : IDisposable
         if (Engine.Source is AudioSource.Loopback or AudioSource.Apps) StartLiveAudio();
         else UpdateAudio();
         RaiseChanged();
+        _ = NowPlaying.PollAsync(); // show the newly chosen app's song right away
+    }
+
+    /// <summary>
+    /// Now playing follows what's being listened to (same rule as the engine): with chosen apps, the
+    /// one that made sound most recently first, then the others in the order chosen; null = everything.
+    /// </summary>
+    private IReadOnlyList<string>? PreferredNowPlayingApps()
+    {
+        if (Settings.Listen != ListenMode.SelectedApps) return null;
+        var order = Engine.AppSoundTimes().Where(x => x.SecondsSinceSound < double.MaxValue).Select(x => x.Name).ToList();
+        foreach (var app in Settings.Apps)
+        {
+            string name = app.ToLowerInvariant();
+            if (!order.Contains(name)) order.Add(name);
+        }
+        return order;
     }
 
     public void SetScreen(string deviceName)
